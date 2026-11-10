@@ -316,7 +316,7 @@ const TABS = [["inicio", "Inicio"], ["agenda", "Agenda"], ["profesionales", "Pro
 
 /* ============ Datos ============ */
 const COLS = ["consultorios", "profesionales", "series", "ocupaciones", "movimientos", "gastos", "tareas", "socios", "socmov", "avisos", "contratos"];
-const DEF_CONFIG = { nombre: "", abre: "08:00", cierra: "21:00", diasAbiertos: [true, true, true, true, true, true, false], horasCancelacion: 24, diasGracia: 5, configurado: false, tarifario: { hora: 0, modulos: [], historial: [] } };
+const DEF_CONFIG = { nombre: "", abre: "08:00", cierra: "21:00", diasAbiertos: [true, true, true, true, true, true, false], horasCancelacion: 24, diasAvisoFijo: 15, diasGracia: 5, configurado: false, tarifario: { hora: 0, modulos: [], historial: [] } };
 const D = { config: { ...DEF_CONFIG } };
 COLS.forEach((c) => (D[c] = {}));
 let db = null, downloads = null, modoLocal = false, listo = false;
@@ -431,6 +431,7 @@ const nomPlazo = (n) => (PLAZOS.find((x) => x[0] === Number(n)) || [0, n + " mes
 const addMeses = (iso, n) => { const d = fromISO(iso), dia = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(dia, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return toISO(d); };
 const mesesEntre = (a, b) => { const x = fromISO(a), y = fromISO(b); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth() - (y.getDate() < x.getDate() ? 1 : 0); };
 const finContrato = (inicio, meses) => addDays(addMeses(inicio, meses), -1);
+const diasAvisoFijo = () => (D.config.diasAvisoFijo == null ? 15 : Number(D.config.diasAvisoFijo) || 0);
 const recargoSuelta = () => Number(tarifario().recargoSuelta) || 0;
 const anticipSuelta = () => Number(tarifario().anticipacionSuelta) || 14;
 const precioSuelta = (pid, cons) => Math.round(precioHora(pid, cons) * (1 + recargoSuelta() / 100));
@@ -808,6 +809,13 @@ function modalPvItem(m) {
   const x = encontrarItem(m.key); if (!x) return mHead("Horario") + '<div class="modal-b">Ya no existe.</div>';
   const tarde = esTarde(x.fecha, x.desde), pend = x.estado === "pendiente", h = Number(D.config.horasCancelacion || 24);
   const pasado = fromISO(x.fecha) < fromISO(hoy()) || (x.fecha === hoy() && x.desde <= ahoraMin());
+  const aviso = diasAvisoFijo(), faltan = Math.round((fromISO(x.fecha) - fromISO(hoy())) / 864e5);
+  if (x.kind === "serie" && !pasado) {
+    const puede = faltan >= aviso;
+    return mHead("Tu horario fijo") + '<div class="modal-b"><dl class="kv"><dt>Consultorio</dt><dd>' + esc(nomCons(x.consultorioId)) + "</dd><dt>Día</dt><dd>" + esc(fLarga(x.fecha)) + '</dd><dt>Horario</dt><dd class="num">' + hm(x.desde) + " a " + hm(x.hasta) + "</dd></dl>" +
+      '<div class="note ' + (puede ? "info" : "warn") + '">' + (puede ? "Si no vas a venir, liberalo: queda disponible para que lo alquile otra persona. Tu cuota no cambia." : "Los días de tu horario fijo se liberan con al menos <b>" + aviso + " días de aviso</b>, para que se puedan volver a alquilar. Este día sigue a tu nombre.") + "</div>" +
+      '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cerrar</button>' + (puede ? '<button type="button" class="btn danger" data-a="pv-cancelar" data-key="' + esc(x.key) + '">Liberar este día</button>' : "") + "</div>";
+  }
   return mHead(x.kind === "serie" ? "Tu horario fijo" : "Tu reserva") + '<div class="modal-b"><dl class="kv"><dt>Consultorio</dt><dd>' + esc(nomCons(x.consultorioId)) + "</dd><dt>Día</dt><dd>" + esc(fLarga(x.fecha)) + '</dd><dt>Horario</dt><dd class="num">' + hm(x.desde) + " a " + hm(x.hasta) + "</dd><dt>Estado</dt><dd>" + (pend ? "Esperando aprobación del dueño" : "Confirmado") + "</dd>" + (x.kind === "one" && x.importe ? "<dt>Costo</dt><dd>" + money(x.importe) + "</dd>" : "") + "</dl>" +
     (pasado ? "" : '<div class="note ' + (tarde && !pend ? "warn" : "info") + '">' + (pend ? "Si cancelás, se retira el pedido sin costo." : tarde ? "Faltan menos de " + h + " h: si cancelás, el horario se libera pero <b>se cobra igual</b>." : "Faltan más de " + h + " h: podés cancelar <b>sin costo</b>.") + "</div>") +
     '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cerrar</button>' + (pasado ? "" : '<button type="button" class="btn danger" data-a="pv-cancelar" data-key="' + esc(x.key) + '">' + (x.kind === "serie" ? "No voy este día" : pend ? "Retirar el pedido" : "Cancelar reserva") + "</button>") + "</div>";
@@ -874,7 +882,7 @@ function armadorHTML(pid, paraDueno) {
     '<section class="panel"><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
     (elegidas.length ? '<div style="display:flex;flex-direction:column;gap:6px">' + elegidas.slice().sort((x, y) => x.dia - y.dia || x.desde - y.desde).map((fr) => '<div class="franja">' + DIAS_L[fr.dia].replace(/^./, (z) => z.toUpperCase()) + " " + hm(fr.desde) + "–" + hm(fr.hasta) + ' <span class="small muted" style="font-weight:500">' + esc(nomCons(fr.consultorioId)) + '</span><button type="button" class="btn ghost sm spacer" data-a="cf-quitar" data-v="' + elegidas.indexOf(fr) + '">Quitar</button></div>').join("") + "</div>" +
       '<div class="sumario"><div><span class="small muted">Horas por semana</span><b>' + fmtH(horas) + '</b></div><div><span class="small muted">Cuota mensual</span><b>' + (precio ? money(precio) : "A definir") + '</b>' + (precio ? "" : '<span class="small muted">Falta cargar tarifas</span>') + '</div><div><span class="small muted">Plazo</span><b>' + nomPlazo(S.plazo) + '</b><span class="small muted">' + fCorta(S.inicio) + " al " + fCorta(fin) + "</span></div></div>" +
-      '<p class="small muted" style="margin:0">' + (ajuste ? "La cuota se ajusta " + ajuste + "% cada 3 meses (primer ajuste el " + fCorta(addMeses(S.inicio, 3)) + "). " : "") + "El primer mes se cobra proporcional a los días. Podés liberar un día puntual cuando no vengas; el horario queda reservado para vos todo el plazo.</p>" +
+      '<p class="small muted" style="margin:0">' + (ajuste ? "La cuota se ajusta " + ajuste + "% cada 3 meses (primer ajuste el " + fCorta(addMeses(S.inicio, 3)) + "). " : "") + "El primer mes se cobra proporcional a los días. Si un día no venís, liberalo con " + diasAvisoFijo() + " días de aviso; el horario queda reservado para vos todo el plazo.</p>" +
       (pend ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido: el pedido queda esperando la aprobación del dueño.</div>" : "") +
       '<div><button type="button" class="btn primary" data-a="cf-confirmar">' + (pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button></div>"
       : '<div class="empty small">Todavía no sumaste horarios. Elegí día, duración y tocá una hora.</div>') +
@@ -1227,7 +1235,8 @@ function secAjustes() {
     '<div class="field"><label for="a-nombre">Nombre</label><input class="inp" id="a-nombre" name="nombre" value="' + esc(c.nombre) + '"></div>' +
     '<div class="grid2"><div class="field"><label for="a-abre">Abre</label><input class="inp" id="a-abre" name="abre" type="time" step="1800" value="' + esc(c.abre) + '"></div><div class="field"><label for="a-cierra">Cierra</label><input class="inp" id="a-cierra" name="cierra" type="time" step="1800" value="' + esc(c.cierra) + '"></div></div>' +
     '<fieldset style="border:0;padding:0;margin:0"><legend class="lbl" style="margin-bottom:6px">Días que abre</legend><div class="chips">' + DIAS.map((d, i) => '<label class="check" style="min-height:36px;padding:0 10px;border:1px solid var(--line);border-radius:18px"><input type="checkbox" name="dia' + i + '"' + ((c.diasAbiertos || [])[i] ? " checked" : "") + "> " + d + "</label>").join("") + "</div></fieldset>" +
-    '<div class="grid2"><div class="field"><label for="a-hc">Horas para cancelar sin cargo</label><input class="inp" id="a-hc" name="horasCancelacion" type="number" min="0" max="168" value="' + esc(c.horasCancelacion) + '"></div><div class="field"><label for="a-dg">Días de gracia para pagar</label><input class="inp" id="a-dg" name="diasGracia" type="number" min="0" max="60" value="' + esc(c.diasGracia) + '"></div></div>' +
+    '<div class="field" style="max-width:340px"><label for="a-af">Días de aviso para liberar un día del horario fijo</label><input class="inp" id="a-af" name="diasAvisoFijo" type="number" min="0" max="60" value="' + esc(diasAvisoFijo()) + '"><span class="small muted">Con menos aviso, el profesional no puede liberarlo desde su app.</span></div>' +
+    '<div class="grid2"><div class="field"><label for="a-hc">Horas sueltas: horas para cancelar sin cargo</label><input class="inp" id="a-hc" name="horasCancelacion" type="number" min="0" max="168" value="' + esc(c.horasCancelacion) + '"></div><div class="field"><label for="a-dg">Días de gracia para pagar</label><input class="inp" id="a-dg" name="diasGracia" type="number" min="0" max="60" value="' + esc(c.diasGracia) + '"></div></div>' +
     '<div class="field"><label for="a-pago">Datos para que te paguen (los ven los profesionales)</label><textarea class="inp" id="a-pago" name="datosPago" placeholder="Alias, CBU, titular y banco">' + esc(c.datosPago || "") + "</textarea></div>" +
     '<div><button class="btn primary" type="submit">Guardar cambios</button></div></div></form>' +
     '<section class="panel"><div class="panel-h"><h2>Respaldo</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
@@ -1901,7 +1910,7 @@ document.addEventListener("submit", async (e) => {
       const dias = DIAS.map((_, i) => fd.get("dia" + i) === "on");
       const abre = g("abre") || "08:00", cierra = g("cierra") || "21:00";
       if (toMin(cierra) <= toMin(abre)) return toast("La hora de cierre tiene que ser posterior a la de apertura.");
-      await putConfig({ nombre: g("nombre"), abre, cierra, diasAbiertos: dias, horasCancelacion: Number(g("horasCancelacion")) || 0, diasGracia: Number(g("diasGracia")) || 0, datosPago: String(fd.get("datosPago") || "").trim(), configurado: true });
+      await putConfig({ nombre: g("nombre"), abre, cierra, diasAbiertos: dias, horasCancelacion: Number(g("horasCancelacion")) || 0, diasAvisoFijo: Number(g("diasAvisoFijo")) || 0, diasGracia: Number(g("diasGracia")) || 0, datosPago: String(fd.get("datosPago") || "").trim(), configurado: true });
       toast("Cambios guardados"); break;
     }
   }
