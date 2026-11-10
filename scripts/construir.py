@@ -289,7 +289,7 @@ rep("""      const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio
       if (!S.franjas.length) break;
       if (ROL === "profesional") {
         el.disabled = true;
-        const { data, error } = await SB.rpc("pv_contratar", { p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo });
+        const { data, error } = await SB.rpc("pv_contratar", { p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo, p_modulo: S.modId || null });
         el.disabled = false;
         if (error) { await cargarAgenda(); render(); toast(error.message || "No se pudo confirmar."); break; }
         UI.cf = null; await cargarTodo(); UI.pvTab = "inicio"; render(); window.scrollTo(0, 0);

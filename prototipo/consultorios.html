@@ -466,14 +466,14 @@ function franjaLibre(fr, inicio, fin, pid, ignorarContrato) {
 }
 async function crearContrato(d) {
   const id = uid(), fin = finContrato(d.inicio, d.plazo);
-  const precio = d.precio != null ? Number(d.precio) : precioSemanal(horasFranjas(d.franjas));
+  const precio = d.precio != null && d.precio !== undefined ? Number(d.precio) : precioSemanal(horasFranjas(d.franjas));
   const estado = d.estado || "activo";
   const seriesIds = [];
   for (const fr of d.franjas) {
     const sid = uid(); seriesIds.push(sid);
     await put("series", sid, { consultorioId: fr.consultorioId, profesionalId: d.profesionalId, dia: fr.dia, desde: fr.desde, hasta: fr.hasta, inicio: d.inicio, fin, tipo: "contrato", contratoId: id, nota: "", ...(estado === "pendiente" ? { estado: "pendiente" } : {}) });
   }
-  await put("contratos", id, { profesionalId: d.profesionalId, franjas: d.franjas, plazo: Number(d.plazo), mesesTotal: Number(d.plazo), inicio: d.inicio, fin, precio, ajustePct: Number(d.ajustePct != null ? d.ajustePct : tarifario().ajustePct) || 0, estado, seriesIds, origen: d.origen || "dueno", creado: new Date().toISOString() });
+  await put("contratos", id, { profesionalId: d.profesionalId, franjas: d.franjas, plazo: Number(d.plazo), mesesTotal: Number(d.plazo), inicio: d.inicio, fin, precio, ajustePct: Number(d.ajustePct != null ? d.ajustePct : tarifario().ajustePct) || 0, estado, seriesIds, moduloId: d.moduloId || null, origen: d.origen || "dueno", creado: new Date().toISOString() });
   return id;
 }
 async function setSeriesContrato(c, cambios) {
@@ -881,10 +881,20 @@ function modalPvPago() {
 }
 
 /* ---- Armador de horario fijo ---- */
+const MIN_BLOQUE = 120;
+const modulosOrden = () => tarifario().modulos.filter((m) => Number(m.horas) > 0 && Number(m.precio) > 0).sort((a, b) => a.horas - b.horas);
+// duraciones posibles para un bloque: mínimo 2 h, sin dejar un resto imposible (menos de 2 h)
+function duracionesPosibles(faltanMin) {
+  const out = [];
+  for (let d = MIN_BLOQUE; d <= Math.min(faltanMin, 600); d += 60) { const r = faltanMin - d; if (r === 0 || r >= MIN_BLOQUE) out.push(d); }
+  if (faltanMin >= MIN_BLOQUE && faltanMin <= 600 && out.indexOf(faltanMin) === -1) out.push(faltanMin);
+  return out.sort((a, b) => a - b);
+}
 function cfEstado(pid) {
   if (!UI.cf || UI.cf.pid !== pid) {
     let ini = hoy(); if (!abierto(ini)) ini = addDays(ini, 1);
-    UI.cf = { pid, franjas: [], plazo: 6, inicio: ini, dia: (wd(hoy()) + 1) % 6, dur: 240 };
+    const mods = modulosOrden();
+    UI.cf = { pid, franjas: [], plazo: 6, inicio: ini, dia: (wd(hoy()) + 1) % 6, dur: 120, modId: mods.length ? mods[0].id : "" };
   }
   return UI.cf;
 }
@@ -892,8 +902,12 @@ function armadorHTML(pid, paraDueno) {
   const S = cfEstado(pid), fin = finContrato(S.inicio, S.plazo), a = abreMin(), cz = cierraMin();
   const diasAb = [0, 1, 2, 3, 4, 5, 6].filter((i) => (D.config.diasAbiertos || DEF_CONFIG.diasAbiertos)[i]);
   if (diasAb.indexOf(S.dia) === -1) S.dia = diasAb[0] || 0;
-  const durs = [[120, "2 h"], [180, "3 h"], [240, "4 h"], [300, "5 h"], [360, "6 h"], [480, "8 h"]];
-  const elegidas = S.franjas;
+  const mods = modulosOrden(), mod = mods.find((m) => m.id === S.modId) || null;
+  const elegidas = S.franjas, horas = horasFranjas(elegidas);
+  const metaMin = mod ? Math.round(Number(mod.horas) * 60) : 0, faltanMin = mod ? Math.max(0, metaMin - horas * 60) : 600;
+  const durs = mod ? duracionesPosibles(faltanMin) : [120, 180, 240, 300, 360, 480];
+  if (durs.length && durs.indexOf(S.dur) === -1) S.dur = durs[0];
+  const completo = mod ? faltanMin === 0 : elegidas.length > 0;
   const choca = (fr) => elegidas.some((x) => x.dia === fr.dia && solapa(fr.desde, fr.hasta, x.desde, x.hasta));
   const filas = consultoriosAct().map((k) => {
     const libres = [];
@@ -901,21 +915,26 @@ function armadorHTML(pid, paraDueno) {
     return '<div class="row" style="flex-direction:column;align-items:stretch;gap:8px"><span class="row-title">' + esc(k.nombre) + "</span>" +
       (libres.length ? '<div class="slots">' + libres.map((m) => '<button type="button" class="slot" data-a="cf-add" data-cons="' + k.id + '" data-v="' + m + '">' + hm(m) + "</button>").join("") + "</div>" : '<span class="small muted">No hay ' + fmtH(S.dur / 60) + " libres todos los " + DIAS_L[S.dia] + " de ese período.</span>") + "</div>";
   }).join("");
-  const horas = horasFranjas(elegidas), precio = precioSemanal(horas), ajuste = Number(tarifario().ajustePct) || 0;
+  const precio = mod ? Number(mod.precio) : precioSemanal(horas), ajuste = Number(tarifario().ajustePct) || 0;
   const c = cuenta(pid), pend = !paraDueno && c.vencido > 0;
-  return '<div class="pv-step"><b>1</b>Plazo y desde cuándo</div>' +
+  const pct = mod ? Math.round((horas * 60 / metaMin) * 100) : 0;
+  return '<div class="pv-step"><b>1</b>¿Cuántas horas por semana?</div>' +
+    (mods.length ? '<div class="slots" role="group" aria-label="Módulo">' + mods.map((m) => '<button type="button" class="chip-btn" style="min-height:52px;display:flex;flex-direction:column;align-items:flex-start;gap:0;padding:6px 14px" data-a="cf-mod" data-v="' + esc(m.id) + '" aria-pressed="' + (S.modId === m.id) + '"><b>' + esc(fmtH(Number(m.horas))) + '</b><span class="small">' + money(m.precio) + " por mes</span></button>").join("") + "</div>" : '<p class="small muted" style="margin:0">El dueño todavía no cargó módulos: la cuota se calcula por las horas que elijas.</p>') +
+    '<div class="pv-step"><b>2</b>Plazo y desde cuándo</div>' +
     '<div class="tools"><div class="seg" role="group" aria-label="Plazo">' + PLAZOS.map(([n, l]) => '<button type="button" data-a="cf-plazo" data-v="' + n + '" aria-pressed="' + (S.plazo === n) + '">' + l + "</button>").join("") + "</div>" +
     '<div class="field" style="width:170px"><label for="cf-ini">Empieza</label><input class="inp" type="date" id="cf-ini" data-change="cf-ini" min="' + hoy() + '" value="' + S.inicio + '"></div><span class="small muted" style="align-self:center">Hasta el ' + fCorta(fin) + "/" + fin.slice(2, 4) + "</span></div>" +
-    '<div class="pv-step"><b>2</b>Sumá tus horarios de cada semana</div>' +
-    '<div class="tools"><div class="seg" role="group" aria-label="Día">' + diasAb.map((i) => '<button type="button" data-a="cf-dia" data-v="' + i + '" aria-pressed="' + (S.dia === i) + '">' + DIAS[i] + "</button>").join("") + '</div><div class="seg" role="group" aria-label="Duración">' + durs.map(([m, l]) => '<button type="button" data-a="cf-dur" data-v="' + m + '" aria-pressed="' + (S.dur === m) + '">' + l + "</button>").join("") + "</div></div>" +
-    '<section class="panel"><div class="panel-h"><div><h2>Libres todos los ' + DIAS_L[S.dia] + '</h2><span class="small muted">Tocá la hora de inicio para sumarla. Solo aparecen los horarios libres durante todo el plazo.</span></div></div><div class="rows">' + filas + "</div></section>" +
-    '<div class="pv-step"><b>3</b>Revisá y confirmá</div>' +
+    '<div class="pv-step"><b>3</b>' + (mod ? "Repartí tus " + fmtH(Number(mod.horas)) + " en la semana" : "Sumá tus horarios de cada semana") + "</div>" +
+    (mod ? '<div class="kpi" style="gap:6px"><span class="kpi-l">' + (completo ? "Completaste tus " + fmtH(Number(mod.horas)) : "Llevás " + fmtH(horas) + " de " + fmtH(Number(mod.horas)) + " · te faltan " + fmtH(faltanMin / 60)) + '</span><div class="bar"><i style="width:' + Math.min(100, pct) + "%;" + (completo ? "background:var(--good)" : "") + '"></i></div><span class="kpi-s">Podés repartirlas en distintos días y consultorios. Mínimo 2 h por bloque.</span></div>' : "") +
+    (completo && mod ? "" :
+      '<div class="tools"><div class="seg" role="group" aria-label="Día">' + diasAb.map((i) => '<button type="button" data-a="cf-dia" data-v="' + i + '" aria-pressed="' + (S.dia === i) + '">' + DIAS[i] + "</button>").join("") + '</div><div class="seg" role="group" aria-label="Duración">' + durs.map((m) => '<button type="button" data-a="cf-dur" data-v="' + m + '" aria-pressed="' + (S.dur === m) + '">' + fmtH(m / 60).replace(",5", "½") + "</button>").join("") + "</div></div>" +
+      '<section class="panel"><div class="panel-h"><div><h2>Libres todos los ' + DIAS_L[S.dia] + " · bloques de " + fmtH(S.dur / 60) + '</h2><span class="small muted">Tocá la hora de inicio para sumarla. Solo aparecen los horarios libres durante todo el plazo.</span></div></div><div class="rows">' + filas + "</div></section>") +
+    '<div class="pv-step"><b>4</b>Revisá y confirmá</div>' +
     '<section class="panel"><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
     (elegidas.length ? '<div style="display:flex;flex-direction:column;gap:6px">' + elegidas.slice().sort((x, y) => x.dia - y.dia || x.desde - y.desde).map((fr) => '<div class="franja">' + DIAS_L[fr.dia].replace(/^./, (z) => z.toUpperCase()) + " " + hm(fr.desde) + "–" + hm(fr.hasta) + ' <span class="small muted" style="font-weight:500">' + esc(nomCons(fr.consultorioId)) + '</span><button type="button" class="btn ghost sm spacer" data-a="cf-quitar" data-v="' + elegidas.indexOf(fr) + '">Quitar</button></div>').join("") + "</div>" +
-      '<div class="sumario"><div><span class="small muted">Horas por semana</span><b>' + fmtH(horas) + '</b></div><div><span class="small muted">Cuota mensual</span><b>' + (precio ? money(precio) : "A definir") + '</b>' + (precio ? "" : '<span class="small muted">Falta cargar tarifas</span>') + '</div><div><span class="small muted">Plazo</span><b>' + nomPlazo(S.plazo) + '</b><span class="small muted">' + fCorta(S.inicio) + " al " + fCorta(fin) + "</span></div></div>" +
+      '<div class="sumario"><div><span class="small muted">Horas por semana</span><b>' + fmtH(horas) + (mod ? " de " + fmtH(Number(mod.horas)) : "") + '</b></div><div><span class="small muted">Cuota mensual</span><b>' + (precio ? money(precio) : "A definir") + "</b>" + (precio ? "" : '<span class="small muted">Falta cargar tarifas</span>') + '</div><div><span class="small muted">Plazo</span><b>' + nomPlazo(S.plazo) + '</b><span class="small muted">' + fCorta(S.inicio) + " al " + fCorta(fin) + "</span></div></div>" +
       '<p class="small muted" style="margin:0">' + (ajuste ? "La cuota se ajusta " + ajuste + "% cada 3 meses (primer ajuste el " + fCorta(addMeses(S.inicio, 3)) + "). " : "") + "El primer mes se cobra proporcional a los días. Si un día no venís, liberalo con " + diasAvisoFijo() + " días de aviso; el horario queda reservado para vos todo el plazo.</p>" +
       (pend ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido: el pedido queda esperando la aprobación del dueño.</div>" : "") +
-      '<div><button type="button" class="btn primary" data-a="cf-confirmar">' + (pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button></div>"
+      '<div><button type="button" class="btn primary" data-a="cf-confirmar"' + (completo ? "" : " disabled") + ">" + (!completo ? "Te faltan " + fmtH(faltanMin / 60) + " para completar" : pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button></div>"
       : '<div class="empty small">Todavía no sumaste horarios. Elegí día, duración y tocá una hora.</div>') +
     "</div></section>";
 }
@@ -1625,6 +1644,7 @@ document.addEventListener("click", async (e) => {
     case "pv-tab": UI.pvTab = v; cerrarModal(); render(); window.scrollTo(0, 0); break;
     case "ir-contratos": UI.tab = "mas"; UI.seccionMas = "contratos"; render(); window.scrollTo(0, 0); break;
     case "cf-plazo": cfEstado(UI.cf.pid).plazo = Number(v); UI.cf.franjas = UI.cf.franjas.filter((fr) => franjaLibre(fr, UI.cf.inicio, finContrato(UI.cf.inicio, UI.cf.plazo), UI.cf.pid).ok); UI.modal ? renderModal() : render(); break;
+    case "cf-mod": UI.cf.modId = v; { const mo = modulosOrden().find((m) => m.id === v); if (mo) { let tot = 0; UI.cf.franjas = UI.cf.franjas.filter((fr) => { tot += fr.hasta - fr.desde; return tot <= mo.horas * 60; }); } } UI.modal ? renderModal() : render(); break;
     case "cf-dia": UI.cf.dia = Number(v); UI.modal ? renderModal() : render(); break;
     case "cf-dur": UI.cf.dur = Number(v); UI.modal ? renderModal() : render(); break;
     case "cf-add": UI.cf.franjas.push({ consultorioId: el.dataset.cons, dia: UI.cf.dia, desde: Number(v), hasta: Number(v) + UI.cf.dur }); UI.modal ? renderModal() : render(); toast("Sumado: " + DIAS_L[UI.cf.dia] + " " + hm(Number(v)) + "–" + hm(Number(v) + UI.cf.dur)); break;
@@ -1632,10 +1652,12 @@ document.addEventListener("click", async (e) => {
     case "cf-confirmar": {
       const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio, S.plazo);
       if (!S.franjas.length) break;
+      const modC = modulosOrden().find((m) => m.id === S.modId) || null;
+      if (modC && Math.round(horasFranjas(S.franjas) * 60) !== Math.round(modC.horas * 60)) { toast("Completá las " + fmtH(Number(modC.horas)) + " del módulo"); break; }
       const malo = S.franjas.find((fr) => !franjaLibre(fr, S.inicio, fin, S.pid).ok);
       if (malo) { toast("Uno de los horarios se acaba de ocupar. Revisalo."); S.franjas = S.franjas.filter((fr) => fr !== malo); paraDueno ? renderModal() : render(); break; }
       const pend = !paraDueno && cuenta(S.pid).vencido > 0;
-      await crearContrato({ profesionalId: S.pid, franjas: S.franjas, plazo: S.plazo, inicio: S.inicio, estado: pend ? "pendiente" : "activo", origen: paraDueno ? "dueno" : "portal" });
+      await crearContrato({ profesionalId: S.pid, franjas: S.franjas, plazo: S.plazo, inicio: S.inicio, estado: pend ? "pendiente" : "activo", origen: paraDueno ? "dueno" : "portal", precio: modC ? Number(modC.precio) : undefined, moduloId: modC ? modC.id : null });
       UI.cf = null;
       if (paraDueno) { cerrarModal(); UI.tab = "mas"; UI.seccionMas = "contratos"; } else UI.pvTab = "inicio";
       render(); window.scrollTo(0, 0); toast(pend ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
