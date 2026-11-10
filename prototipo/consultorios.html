@@ -316,7 +316,7 @@ const ICON = {
 const TABS = [["inicio", "Inicio"], ["agenda", "Agenda"], ["profesionales", "Profesionales"], ["cobros", "Cobros"], ["mas", "Más"]];
 
 /* ============ Datos ============ */
-const COLS = ["consultorios", "profesionales", "series", "ocupaciones", "movimientos", "gastos", "tareas", "socios", "socmov", "avisos", "contratos"];
+const COLS = ["consultorios", "profesionales", "series", "ocupaciones", "movimientos", "gastos", "tareas", "socios", "socmov", "avisos", "contratos", "gastosfijos"];
 const DEF_CONFIG = { nombre: "", abre: "08:00", cierra: "21:00", diasAbiertos: [true, true, true, true, true, true, false], horasCancelacion: 24, diasAvisoFijo: 15, diasGracia: 5, configurado: false, tarifario: { hora: 0, modulos: [], historial: [] } };
 const D = { config: { ...DEF_CONFIG } };
 COLS.forEach((c) => (D[c] = {}));
@@ -596,6 +596,48 @@ function cuenta(profId, corte) {
 function cargosPendientes(ym) {
   const editable = ym >= mesDe(hoy());
   return cargosPropuestosMes(ym).filter((c) => !D.movimientos[c.id] || (editable && Number(D.movimientos[c.id].importe) !== c.importe));
+}
+/* ============ Gastos fijos (impuestos y servicios) ============ */
+const CATS_GASTO = ["Alquiler del inmueble", "Expensas", "Luz", "Gas", "Agua", "Internet", "Limpieza", "Mantenimiento", "Reparaciones", "Impuestos", "Seguros", "Insumos", "Honorarios", "Otros"];
+const FRECS = [[1, "Mensual"], [2, "Bimestral"], [3, "Trimestral"], [6, "Semestral"], [12, "Anual"]];
+const gastosFijosAct = () => lista("gastosfijos").filter((x) => x.activo !== false).sort((a, b) => (a.dia || 0) - (b.dia || 0));
+const tocaEnMes = (gf, ym) => { const desde = gf.desde || ym; if (ym < desde) return false; const [y1, m1] = desde.split("-").map(Number), [y2, m2] = ym.split("-").map(Number); return ((y2 - y1) * 12 + (m2 - m1)) % (Number(gf.frecuencia) || 1) === 0; };
+const venceFijo = (gf, ym) => ym + "-" + pad(Math.min(Number(gf.dia) || 10, diasDelMes(ym)));
+const pagoFijo = (gf, ym) => D.gastos["gf-" + gf.id + "-" + ym] || null;
+function fijosDelMes(ym) {
+  return gastosFijosAct().filter((gf) => tocaEnMes(gf, ym)).map((gf) => { const vence = venceFijo(gf, ym), pago = pagoFijo(gf, ym); return { gf, ym, vence, pago, estado: pago ? "pagado" : vence < hoy() ? "vencido" : "pendiente" }; });
+}
+async function registrarPagoFijo(gf, ym, importe, fecha, auto) {
+  const gid = "gf-" + gf.id + "-" + ym;
+  await put("gastos", gid, { importe: Number(importe), fecha, categoria: gf.categoria, descripcion: gf.descripcion || gf.categoria, consultorioId: gf.consultorioId || "", pagadoPor: gf.pagadoPor || "", fijoId: gf.id, periodo: ym, ...(auto ? { auto: true } : {}) });
+  if (gf.pagadoPor) await put("socmov", "gp-" + gid, { socioId: gf.pagadoPor, tipo: "aporte", importe: Number(importe), fecha, nota: "Pagó de su bolsillo: " + (gf.descripcion || gf.categoria), gastoId: gid });
+}
+// Débito automático: el día del vencimiento se carga solo con el importe estimado
+async function debitosAutomaticos() {
+  let n = 0;
+  for (const ym of [addMonths(mesDe(hoy()), -1), mesDe(hoy())]) for (const x of fijosDelMes(ym)) if (x.gf.debito && !x.pago && x.vence <= hoy() && Number(x.gf.importe) > 0) { await registrarPagoFijo(x.gf, ym, x.gf.importe, x.vence, true); n++; }
+  if (n) toast("Se cargaron solos " + n + " gastos con débito automático");
+  return n;
+}
+function modalGastoFijo(m) {
+  const g0 = m.id ? D.gastosfijos[m.id] || {} : { frecuencia: 1, dia: 10, desde: mesDe(hoy()) };
+  const cats = CATS_GASTO.slice(); if (g0.categoria && cats.indexOf(g0.categoria) === -1) cats.push(g0.categoria);
+  return mHead(m.id ? "Editar gasto fijo" : "Nuevo gasto fijo") + '<form data-form="gasto-fijo"><div class="modal-b">' +
+    '<div class="grid2"><div class="field"><label for="gf-cat">Categoría</label><select class="sel" id="gf-cat" name="categoria">' + cats.map((c) => "<option" + (c === g0.categoria ? " selected" : "") + ">" + esc(c) + "</option>").join("") + '</select></div><div class="field"><label for="gf-desc">Nombre</label><input class="inp" id="gf-desc" name="descripcion" required value="' + esc(g0.descripcion || "") + '" placeholder="Ej.: EDEA, Camuzzi, OSSE, ARBA, TSU"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="gf-imp">Importe estimado</label><input class="inp" id="gf-imp" name="importe" type="number" min="0" step="0.01" value="' + esc(g0.importe || "") + '"><span class="small muted">Lo podés corregir cada vez que pagás</span></div><div class="field"><label for="gf-dia">Vence el día</label><input class="inp" id="gf-dia" name="dia" type="number" min="1" max="31" value="' + esc(g0.dia || 10) + '"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="gf-fr">Cada cuánto</label><select class="sel" id="gf-fr" name="frecuencia">' + FRECS.map(([n, l]) => '<option value="' + n + '"' + (Number(g0.frecuencia) === n ? " selected" : "") + ">" + l + "</option>").join("") + '</select></div><div class="field"><label for="gf-desde">Primer mes</label><input class="inp" id="gf-desde" name="desde" type="month" value="' + esc(g0.desde || mesDe(hoy())) + '"></div></div>' +
+    '<div class="field"><label for="gf-cons">Corresponde a</label><select class="sel" id="gf-cons" name="consultorioId"><option value="">Todo el lugar</option>' + consultoriosAct().map((c) => '<option value="' + c.id + '"' + (g0.consultorioId === c.id ? " selected" : "") + ">" + esc(c.nombre) + "</option>").join("") + "</select></div>" +
+    (sociosAct().length ? '<div class="field"><label for="gf-pago">Quién lo paga</label><select class="sel" id="gf-pago" name="pagadoPor"><option value="">La caja del consultorio</option>' + sociosAct().map((x) => '<option value="' + x.id + '"' + (g0.pagadoPor === x.id ? " selected" : "") + ">" + esc(x.nombre) + "</option>").join("") + "</select></div>" : "") +
+    '<label class="check"><input type="checkbox" name="debito"' + (g0.debito ? " checked" : "") + "> Débito automático: cargarlo solo el día del vencimiento con el importe estimado</label>" +
+    '</div><div class="modal-f">' + (m.id ? '<button type="button" class="btn danger spacer" data-a="gf-baja" data-id="' + m.id + '">Dejar de usar</button>' : "") + '<button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form>';
+}
+function modalPagoFijo(m) {
+  const gf = D.gastosfijos[m.id]; if (!gf) return mHead("Pago") + '<div class="modal-b">Ya no existe.</div>';
+  const ant = lista("gastos").filter((g) => g.fijoId === gf.id).sort((a, b) => (a.fecha < b.fecha ? 1 : -1))[0];
+  return mHead("Pagado: " + (gf.descripcion || gf.categoria)) + '<form data-form="pago-fijo"><div class="modal-b"><p class="small muted" style="margin:0">' + esc(mesLabel(m.ym)) + " · vence " + fCorta(venceFijo(gf, m.ym)) + (ant ? " · la última vez pagaste " + money(ant.importe) : "") + "</p>" +
+    '<div class="grid2"><div class="field"><label for="pf-imp">Importe pagado</label><input class="inp" id="pf-imp" name="importe" type="number" min="1" step="0.01" required autofocus value="' + esc(gf.importe || (ant ? ant.importe : "")) + '"></div><div class="field"><label for="pf-f">Fecha de pago</label><input class="inp" id="pf-f" name="fecha" type="date" value="' + hoy() + '" required></div></div>' +
+    '<label class="check"><input type="checkbox" name="actualizar" checked> Usar este importe como estimado de los próximos</label>' +
+    '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Registrar pago</button></div></form>';
 }
 async function cargosAutomaticos() {
   if (D.config.cargosAuto === false) return 0;
@@ -1045,6 +1087,7 @@ function vistaInicio() {
     lista("contratos").filter((c) => c.estado === "activo" && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).sort((a, b) => (a.fin < b.fin ? -1 : 1)).forEach((c) => atencion.push('<div class="row"><span class="pill warn">Vence ' + fCorta(c.fin) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + '</span></div><button class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar</button></div>'));
     lista("contratos").filter((c) => c.estado === "activo").map((c) => ({ c, f: proxAjuste(c, h) })).filter((x) => x.f && (fromISO(x.f) - fromISO(h)) / 864e5 <= 15).forEach((x) => atencion.push('<div class="row"><span class="pill info">Aumento ' + fCorta(x.f) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(x.c.profesionalId)) + " · +" + x.c.ajustePct + '%</span><span class="small muted">' + money(precioContrato(x.c, h)) + " → " + money(precioContrato(x.c, x.f)) + " por mes · se aplica solo</span></div></div>"));
   }
+  if (esActual) fijosDelMes(ym).concat(fijosDelMes(addMonths(ym, -1)).filter((x) => x.estado === "vencido")).filter((x) => !x.pago && x.vence <= addDays(h, 5)).forEach((x) => atencion.push('<div class="row"><span class="pill ' + (x.vence < h ? "bad" : "warn") + '">' + (x.vence < h ? "Venció" : "Vence") + " " + fCorta(x.vence) + '</span><div class="row-main"><span class="row-title">' + esc(x.gf.descripcion || x.gf.categoria) + '</span><span class="small muted">' + esc(x.gf.categoria) + (x.gf.importe ? " · aprox. " + money(x.gf.importe) : "") + '</span></div><button class="btn sm primary" data-a="gf-pagar" data-id="' + x.gf.id + '" data-v="' + x.ym + '">Pagado</button></div>'));
   if (generados.length && !esFuturo) atencion.push('<div class="row"><span class="pill info">Cargos</span><div class="row-main"><span class="row-title">Faltan generar ' + generados.length + " cargos de " + mesN + '</span><span class="small muted">' + money(generados.reduce((t, c) => t + c.importe, 0)) + ' entre alquileres mensuales y horarios fijos</span></div><button class="btn sm primary" data-a="ir-cobros" data-v="' + ym + '">Revisar</button></div>');
   vencidos.forEach((x) => atencion.push('<div class="row"><span class="pill bad">Deuda</span><div class="row-main"><span class="row-title">' + esc(x.p.nombre) + '</span><span class="small muted">' + money(x.c.vencido) + " vencido desde el " + fCorta(x.c.masViejo) + (esActual ? "" : " (al " + fCorta(corte) + ")") + '</span></div><button class="btn sm" data-a="ver-prof" data-id="' + x.p.id + '">Ver cuenta</button></div>'));
   if (esActual) tareasProx.forEach((t) => atencion.push('<div class="row"><span class="pill ' + (t.proxima < h ? "bad" : "warn") + '">Mantenimiento</span><div class="row-main"><span class="row-title">' + esc(t.titulo) + '</span><span class="small muted">' + (t.consultorioId ? esc(nomCons(t.consultorioId)) + " · " : "") + (t.proxima < h ? "vencida el " : "para el ") + fCorta(t.proxima) + '</span></div><button class="btn sm" data-a="tarea-hecha" data-id="' + t.id + '">Hecha</button></div>'));
@@ -1217,12 +1260,19 @@ function vistaMas() {
   const body = s === "contratos" ? secContratos() : s === "socios" ? secSocios() : s === "tarifas" ? secTarifas() : s === "gastos" ? secGastos() : s === "mantenimiento" ? secTareas() : s === "consultorios" ? secConsultorios() : secAjustes();
   return '<div class="head"><div class="head-l"><h1>' + esc(secs.find((x) => x[0] === s)[1]) + "</h1></div></div>" + tabs + body;
 }
+function panelFijos(ym) {
+  const xs = fijosDelMes(ym), pend = xs.filter((x) => !x.pago).reduce((t, x) => t + Number(x.gf.importe || 0), 0);
+  const pill = (x) => x.estado === "pagado" ? '<span class="pill good">Pagado ' + money(x.pago.importe) + "</span>" : x.estado === "vencido" ? '<span class="pill bad">Venció ' + fCorta(x.vence) + "</span>" : '<span class="pill warn">Vence ' + fCorta(x.vence) + "</span>";
+  return '<section class="panel"><div class="panel-h"><div><h2>Impuestos y servicios de ' + esc(mesLabel(ym).toLowerCase()) + '</h2><span class="small muted">' + (xs.length ? xs.filter((x) => x.pago).length + " de " + xs.length + " pagados" + (pend ? " · faltan unos " + money(pend) : "") : "Cargá una vez cada impuesto o servicio y la app te avisa cuándo vence cada mes.") + '</span></div><button type="button" class="btn sm" data-a="gf-nuevo">' + ICON.plus + "Gasto fijo</button></div>" +
+    (xs.length ? '<div class="rows">' + xs.map((x) => '<div class="row"><button type="button" class="row-main" style="border:0;background:transparent;text-align:left;padding:0" data-a="gf-editar" data-id="' + x.gf.id + '"><span class="row-title">' + esc(x.gf.descripcion || x.gf.categoria) + '</span><span class="small muted">' + esc(x.gf.categoria) + " · " + (FRECS.find((f) => f[0] === Number(x.gf.frecuencia)) || [0, "Mensual"])[1].toLowerCase() + (x.gf.debito ? " · débito automático" : "") + (x.gf.importe ? " · aprox. " + money(x.gf.importe) : "") + "</span></button>" + pill(x) + (x.pago ? "" : '<button type="button" class="btn sm primary" data-a="gf-pagar" data-id="' + x.gf.id + '" data-v="' + ym + '">Pagado</button>') + "</div>").join("") + "</div>" : "") + "</section>";
+}
 function secGastos() {
   const ym = UI.mesGastos;
   const gs = lista("gastos").filter((g) => mesDe(g.fecha) === ym).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
   const total = gs.reduce((t, g) => t + Number(g.importe || 0), 0);
   const porCat = {}; gs.forEach((g) => (porCat[g.categoria] = (porCat[g.categoria] || 0) + Number(g.importe || 0)));
   return '<div class="tools"><div class="period"><button type="button" class="icon-btn" data-a="mes-gastos" data-v="-1" aria-label="Mes anterior">' + ICON.prev + "</button><span>" + mesLabel(ym) + '</span><button type="button" class="icon-btn" data-a="mes-gastos" data-v="1" aria-label="Mes siguiente">' + ICON.next + '</button></div><button class="btn primary" data-a="gasto-nuevo">' + ICON.plus + "Cargar gasto</button></div>" +
+    panelFijos(ym) +
     '<section class="panel"><div class="panel-h"><h2>Total ' + money(total) + '</h2><span class="small muted">' + Object.entries(porCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => esc(k) + " " + money(v)).join(" · ") + "</span></div>" +
     (gs.length ? '<div class="rows">' + gs.map((g) => '<div class="row"><button type="button" class="row-main" style="border:0;background:transparent;text-align:left;padding:0" data-a="gasto-editar" data-id="' + g.id + '"><span class="row-title">' + esc(g.descripcion || g.categoria) + '</span><span class="small muted">' + fCorta(g.fecha) + " · " + esc(g.categoria) + (g.consultorioId ? " · " + esc(nomCons(g.consultorioId)) : " · General") + (g.pagadoPor && D.socios[g.pagadoPor] ? " · pagó " + esc(D.socios[g.pagadoPor].nombre) : "") + '</span></button><span class="amount">' + money(g.importe) + '</span><button class="icon-btn" data-a="gasto-borrar" data-id="' + g.id + '" aria-label="Borrar gasto">' + ICON.close + "</button></div>").join("") + "</div>" : '<div class="empty small">Sin gastos cargados en ' + MESES[Number(ym.slice(5)) - 1] + ".</div>") + "</section>";
 }
@@ -1305,7 +1355,7 @@ function abrirModal(m) { UI.modal = m; renderModal(); }
 function cerrarModal() { UI.modal = null; $("#modalRoot").innerHTML = ""; }
 function renderModal() {
   const m = UI.modal; if (!m) { $("#modalRoot").innerHTML = ""; return; }
-  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, pasarContrato: modalPasarContrato, ctNuevo: modalContratoNuevo, ctEditar: modalContratoEditar, ctTerminar: modalContratoTerminar, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
+  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, gastoFijo: modalGastoFijo, pagoFijo: modalPagoFijo, pasarContrato: modalPasarContrato, ctNuevo: modalContratoNuevo, ctEditar: modalContratoEditar, ctTerminar: modalContratoTerminar, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
   $("#modalRoot").innerHTML = '<div class="scrim" data-a="scrim"><div class="modal' + (m.wide ? " wide" : "") + '" role="dialog" aria-modal="true" aria-labelledby="mt">' + html + "</div></div>";
   const first = $("#modalRoot [autofocus]") || $("#modalRoot input, #modalRoot select"); if (first && window.innerWidth > 700) first.focus();
 }
@@ -1444,7 +1494,7 @@ function modalSocmov() {
 }
 function modalGasto(m) {
   const g0 = m.id ? D.gastos[m.id] || {} : {};
-  const cats = ["Alquiler del inmueble", "Expensas", "Luz", "Gas", "Agua", "Internet", "Limpieza", "Mantenimiento", "Reparaciones", "Impuestos", "Seguros", "Insumos", "Honorarios", "Otros"];
+  const cats = CATS_GASTO.slice();
   if (g0.categoria && cats.indexOf(g0.categoria) === -1) cats.push(g0.categoria);
   return mHead(m.id ? "Editar gasto" : "Cargar gasto") + '<form data-form="gasto"><div class="modal-b">' +
     '<div class="grid2"><div class="field"><label for="x-imp">Importe</label><input class="inp" id="x-imp" name="importe" type="number" min="1" step="0.01" required autofocus value="' + esc(g0.importe || "") + '"></div><div class="field"><label for="x-fecha">Fecha</label><input class="inp" id="x-fecha" name="fecha" type="date" value="' + esc(g0.fecha || hoy()) + '" required></div></div>' +
@@ -1663,6 +1713,10 @@ document.addEventListener("click", async (e) => {
       render(); window.scrollTo(0, 0); toast(pend ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
     }
     case "pasar-contrato": abrirModal({ t: "pasarContrato", id }); break;
+    case "gf-nuevo": abrirModal({ t: "gastoFijo" }); break;
+    case "gf-editar": abrirModal({ t: "gastoFijo", id }); break;
+    case "gf-pagar": abrirModal({ t: "pagoFijo", id, ym: v }); break;
+    case "gf-baja": { const gf = D.gastosfijos[id]; if (gf) await put("gastosfijos", id, { ...gf, activo: false }); cerrarModal(); toast("Ya no se va a pedir más"); break; }
     case "ct-nuevo": UI.cf = null; abrirModal({ t: "ctNuevo", wide: true }); break;
     case "ct-editar": abrirModal({ t: "ctEditar", id }); break;
     case "ct-terminar": abrirModal({ t: "ctTerminar", id }); break;
@@ -1907,6 +1961,18 @@ document.addEventListener("submit", async (e) => {
       if (pagadoPor) await put("socmov", "gp-" + gid, { socioId: pagadoPor, tipo: "aporte", importe: imp, fecha: g("fecha") || hoy(), nota: "Pagó de su bolsillo: " + (g("descripcion") || g("categoria")), gastoId: gid });
       else if (D.socmov["gp-" + gid]) await del("socmov", "gp-" + gid);
       UI.mesGastos = mesDe(g("fecha") || hoy()); cerrarModal(); toast("Gasto guardado"); break;
+    }
+    case "gasto-fijo": {
+      if (!g("descripcion")) return;
+      const id = UI.modal.id || uid(), viejo = UI.modal.id ? D.gastosfijos[UI.modal.id] : {};
+      await put("gastosfijos", id, { ...viejo, categoria: g("categoria"), descripcion: g("descripcion"), importe: Number(g("importe")) || 0, dia: Math.min(31, Math.max(1, Number(g("dia")) || 10)), frecuencia: Number(g("frecuencia")) || 1, desde: g("desde") || mesDe(hoy()), consultorioId: g("consultorioId"), pagadoPor: g("pagadoPor"), debito: fd.get("debito") === "on", activo: true });
+      cerrarModal(); toast("Gasto fijo guardado"); break;
+    }
+    case "pago-fijo": {
+      const gf = D.gastosfijos[UI.modal.id], imp = Number(g("importe")); if (!gf || !(imp > 0)) return;
+      await registrarPagoFijo(gf, UI.modal.ym, imp, g("fecha") || hoy(), false);
+      if (fd.get("actualizar") === "on" && imp !== Number(gf.importe)) await put("gastosfijos", gf.id, { ...gf, importe: imp });
+      cerrarModal(); toast("Pago registrado"); break;
     }
     case "pasar-contrato": {
       const pid = UI.modal.id; if (!seriesSinContrato(pid).length) return cerrarModal();
