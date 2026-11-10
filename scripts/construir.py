@@ -242,5 +242,17 @@ rep('''    case "socio": {''', '''    case "login": {
     case "socio": {''')
 
 rep('>Restaurar desde archivo</label>', '>Restaurar desde archivo (reemplaza todo)</label>')
+
+# ---------- invitar profesional por mail ----------
+rep("""<button type="button" class="btn" data-a="pv-entrar" data-id="' + p.id + '">Ver la app como '""",
+    """' + (p.email ? '<button type="button" class="btn" data-a="invitar" data-id="' + p.id + '">Mandarle acceso por mail</button>' : "") + '<button type="button" class="btn" data-a="pv-entrar" data-id="' + p.id + '">Ver la app como '""")
+rep("""    case "salir": await SB.auth.signOut(); location.reload(); break;""", """    case "salir": await SB.auth.signOut(); location.reload(); break;
+    case "invitar": {
+      const p = prof(id); if (!p || !p.email) break;
+      el.disabled = true;
+      const { error } = await SB.auth.signInWithOtp({ email: String(p.email).trim(), options: { emailRedirectTo: location.origin + "/" } });
+      el.disabled = false;
+      toast(error ? "No se pudo mandar: " + error.message : "Listo: le mandamos un mail a " + String(p.email).trim() + " para entrar (que revise spam)"); break;
+    }""")
 open('index.html', 'w', encoding='utf-8').write(s)
 print('index.html', len(s))
