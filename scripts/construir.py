@@ -165,6 +165,7 @@ async function iniciar() {
   try { await cargarTodo(); } catch (e) { console.error(e); toast("No se pudieron cargar los datos. Recargá la página."); }
   if (ROL === "profesional") { UI.modo = "prof"; UI.profVista = MI_PROF; setInterval(async () => { await cargarAgenda(); pedirRender(); }, 60000); }
   listo = true; escucharCambios(); render();
+  if (ROL === "dueno") setTimeout(() => cargosAutomaticos().catch(console.error), 1500);
 }
 SB.auth.onAuthStateChange((ev) => { if (ev === "SIGNED_IN" && !listo && !ROL) iniciar(); if (ev === "SIGNED_OUT") location.reload(); });''')
 

@@ -220,7 +220,8 @@ begin
     f := p_fecha + 7 * i;
     w := extract(isodow from f)::int - 1;
     motivo := null;
-    if not coalesce((cfg->'diasAbiertos'->>w)::boolean, w < 6) then motivo := 'cerrado';
+    if f > ahora::date + coalesce((cfg->'tarifario'->>'anticipacionSuelta')::int, 14) then motivo := 'lejos';
+    elsif not coalesce((cfg->'diasAbiertos'->>w)::boolean, w < 6) then motivo := 'cerrado';
     elsif _choca(p_cons, f, p_desde, p_hasta, pid) then motivo := 'ocupado';
     end if;
     if motivo is not null then

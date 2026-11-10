@@ -128,6 +128,7 @@ select.sel.auto { width: auto; font-weight: 600; }
 .row-btn:hover { background: var(--sunken); }
 .empty { padding: 28px 18px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+@media (max-width: 600px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .kpi { padding: 12px; } .kpi .kpi-v { font-size: 1.25rem; } }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
 .kpi-l { font-size: .8rem; color: var(--muted); font-weight: 500; }
 .kpi-v { font-family: var(--f-display); font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
@@ -489,6 +490,27 @@ async function terminarContrato(c, fecha) {
   await put("contratos", c.id, { ...c, fin: fecha, estado: fecha < c.inicio ? "cancelado" : c.estado, terminado: hoy() });
   await setSeriesContrato(c, { fin: fecha });
 }
+const seriesSinContrato = (pid) => lista("series").filter((x) => x.profesionalId === pid && x.tipo === "contrato" && !x.contratoId && (!x.fin || x.fin >= hoy()));
+const primeroMesSig = () => addMonths(mesDe(hoy()), 1) + "-01";
+async function pasarAContrato(pid, plazo, inicio, precio, ajustePct) {
+  const viejas = seriesSinContrato(pid), p = prof(pid);
+  const franjas = viejas.map((x) => ({ consultorioId: x.consultorioId, dia: x.dia, desde: x.desde, hasta: x.hasta }));
+  for (const x of viejas) await put("series", x.id, { ...x, fin: addDays(inicio, -1) });
+  const id = await crearContrato({ profesionalId: pid, franjas, plazo, inicio, precio, ajustePct, origen: "dueno" });
+  await put("profesionales", pid, { ...p, contratoDesde: inicio });
+  return id;
+}
+function modalPasarContrato(m) {
+  const p = prof(m.id); if (!p) return mHead("Pasar a contrato") + '<div class="modal-b">Ya no existe.</div>';
+  const viejas = seriesSinContrato(p.id), fr = viejas.map((x) => ({ consultorioId: x.consultorioId, dia: x.dia, desde: x.desde, hasta: x.hasta }));
+  const sugerido = p.modalidad === "mensual" && Number(p.precioMensual) ? Number(p.precioMensual) : precioSemanal(horasFranjas(fr));
+  return mHead("Pasar a contrato · " + p.nombre) + '<form data-form="pasar-contrato"><div class="modal-b">' +
+    '<p class="muted" style="margin:0">Sus horarios fijos actuales pasan a un contrato con plazo y ajuste automático. Lo que ya está cobrado no cambia.</p>' +
+    '<div style="display:flex;flex-direction:column;gap:6px">' + fr.sort((a, b) => a.dia - b.dia || a.desde - b.desde).map((x) => '<div class="franja">' + DIAS_L[x.dia].replace(/^./, (z) => z.toUpperCase()) + " " + hm(x.desde) + "–" + hm(x.hasta) + ' <span class="small muted" style="font-weight:500">' + esc(nomCons(x.consultorioId)) + "</span></div>").join("") + "</div>" +
+    '<div class="grid2"><div class="field"><label for="pc-pl">Plazo</label><select class="sel" id="pc-pl" name="plazo">' + PLAZOS.map(([n, l]) => '<option value="' + n + '"' + (n === 12 ? " selected" : "") + ">" + l + "</option>").join("") + '</select></div><div class="field"><label for="pc-in">Empieza</label><input class="inp" type="date" id="pc-in" name="inicio" value="' + primeroMesSig() + '" min="' + hoy() + '" required></div></div>' +
+    '<div class="grid2"><div class="field"><label for="pc-pr">Cuota mensual</label><input class="inp" type="number" id="pc-pr" name="precio" min="0" step="100" value="' + sugerido + '"><span class="small muted">' + (p.modalidad === "mensual" ? "Es lo que paga hoy" : "Calculado con tus módulos") + '</span></div><div class="field"><label for="pc-aj">Ajuste cada 3 meses (%)</label><input class="inp" type="number" id="pc-aj" name="ajustePct" min="0" step="0.5" value="' + esc(tarifario().ajustePct) + '"></div></div>' +
+    '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Pasar a contrato</button></div></form>';
+}
 function cargosContratosMes(ym) {
   const ini = ym + "-01", n = diasDelMes(ym), fin = ym + "-" + pad(n), out = [];
   for (const c of lista("contratos")) {
@@ -531,6 +553,7 @@ function horasExtraMes(p, ym) {
   return { horas, total: Math.round(total) };
 }
 function textoPlan(p) {
+  if (p.contratoDesde && p.contratoDesde <= hoy() && contratosDe(p.id).some((c) => c.fin >= hoy())) { const c = contratosDe(p.id).filter((x) => x.fin >= hoy())[0]; return "Contrato " + nomPlazo(c.plazo).toLowerCase() + " · " + money(precioContrato(c, hoy())) + " por mes"; }
   if (p.modalidad !== "mensual") return "Por hora " + money(precioHora(p.id, null)) + (Number(p.precioHora) ? "" : " (tarifa general)");
   if (p.planTipo === "modulos") {
     const partes = tarifario().modulos.filter((m) => Number((p.plan || {})[m.id])).map((m) => (Number(p.plan[m.id]) > 1 ? p.plan[m.id] + "× " : "") + m.nombre);
@@ -574,6 +597,13 @@ function cargosPendientes(ym) {
   const editable = ym >= mesDe(hoy());
   return cargosPropuestosMes(ym).filter((c) => !D.movimientos[c.id] || (editable && Number(D.movimientos[c.id].importe) !== c.importe));
 }
+async function cargosAutomaticos() {
+  if (D.config.cargosAuto === false) return 0;
+  const ym = mesDe(hoy()), ps = cargosPropuestosMes(ym).filter((c) => !D.movimientos[c.id]), vence = venceCargoMensual(ym);
+  for (const c of ps) await put("movimientos", c.id, { profesionalId: c.profesionalId, tipo: "cargo", importe: c.importe, fecha: ym + "-01", vence, concepto: c.concepto, auto: true });
+  if (ps.length) toast("Se generaron solos " + ps.length + " cargos de " + MESES[Number(ym.slice(5)) - 1]);
+  return ps.length;
+}
 function venceCargoMensual(ym) {
   const gracia = Number(D.config.diasGracia || 5), a = addDays(ym + "-01", gracia), b = addDays(hoy(), gracia);
   return a > b ? a : b;
@@ -582,6 +612,7 @@ function cargosPropuestosMes(ym) {
   const out = cargosContratosMes(ym).filter((c) => prof(c.profesionalId) && prof(c.profesionalId).activo !== false);
   const n = diasDelMes(ym);
   for (const p of profesionalesAct()) {
+    if (p.contratoDesde && ym >= mesDe(p.contratoDesde)) continue;
     if (p.modalidad === "mensual") {
       if (Number(p.precioMensual) > 0) out.push({ id: "mes-" + ym + "-" + p.id, profesionalId: p.id, importe: Number(p.precioMensual), concepto: "Alquiler mensual " + mesLabel(ym).toLowerCase(), detalle: "Precio fijo mensual" });
       if (p.extraPorHora) { const ex = horasExtraMes(p, ym); if (ex.total > 0) out.push({ id: "ext-" + ym + "-" + p.id, profesionalId: p.id, importe: ex.total, concepto: "Horas fijas fuera del plan " + mesLabel(ym).toLowerCase() + " (" + fmtH(ex.horas) + ")", detalle: fmtH(ex.horas) + " por encima de " + fmtH(Number(p.horasPlan) || 0) + " semanales" }); }
@@ -906,7 +937,9 @@ function secContratos() {
   const aseg = aseguradoMeses(mesDe(h), 6), hsCont = vig.filter((c) => c.inicio <= h).reduce((t, c) => t + horasFranjas(c.franjas), 0);
   const dispSem = [0, 1, 2, 3, 4, 5, 6].filter((i) => (D.config.diasAbiertos || DEF_CONFIG.diasAbiertos)[i]).length * (cierraMin() - abreMin()) / 60 * consultoriosAct().length;
   const maxA = Math.max(1, ...aseg.map((x) => x.total));
+  const faltan = profesionalesAct().filter((p) => seriesSinContrato(p.id).length);
   return '<div class="tools"><button type="button" class="btn primary" data-a="ct-nuevo">' + ICON.plus + "Nuevo contrato</button></div>" +
+    (faltan.length ? '<section class="panel"><div class="panel-h"><div><h2>Horarios fijos sin contrato (' + faltan.length + ')</h2><span class="small muted">Pasalos a contrato para que tengan plazo, renovación y ajuste automático cada 3 meses.</span></div></div><div class="rows">' + faltan.map((p) => '<div class="row"><div class="row-main"><span class="row-title">' + esc(p.nombre) + '</span><span class="small muted">' + esc(textoPlan(p)) + " · " + seriesSinContrato(p.id).length + ' horarios</span></div><button type="button" class="btn sm primary" data-a="pasar-contrato" data-id="' + p.id + '">Pasar a contrato</button></div>').join("") + "</div></section>" : "") +
     '<section class="kpis"><div class="kpi"><span class="kpi-l">Contratos vigentes</span><span class="kpi-v">' + vig.length + '</span><span class="kpi-s">' + cs.filter((c) => c.estado === "activo" && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).length + " vencen en 30 días</span></div>" +
     '<div class="kpi"><span class="kpi-l">Horas contratadas por semana</span><span class="kpi-v">' + fmtH(hsCont) + '</span><div class="bar"><i style="width:' + Math.min(100, Math.round((hsCont / Math.max(1, dispSem)) * 100)) + '%"></i></div><span class="kpi-s">' + Math.round((hsCont / Math.max(1, dispSem)) * 100) + "% de " + fmtH(dispSem) + " disponibles</span></div>" +
     '<div class="kpi"><span class="kpi-l">Asegurado próximos 6 meses</span><span class="kpi-v">' + money(aseg.reduce((t, x) => t + x.total, 0)) + '</span><span class="kpi-s">por contratos firmados</span></div></section>' +
@@ -1018,6 +1051,8 @@ function vistaInicio() {
       : '<div class="empty"><span class="small">' + (abierto(h) ? "No hay nada reservado para hoy." : "Hoy el lugar está cerrado.") + '</span><button class="btn sm" data-a="nueva">' + ICON.plus + "Reservar</button></div>") + "</section>";
 
   return '<div class="head"><div class="head-l"><span class="eyebrow">' + (esActual ? esc(fLarga(h).replace(/^./, (c) => c.toUpperCase())) : esFuturo ? "Mes próximo: lo reservado hasta hoy" : "Mes cerrado") + "</span><h1>" + esc(D.config.nombre || "Inicio") + "</h1></div>" + periodo + "</div>" +
+  '<section class="panel" aria-labelledby="at-t"><div class="panel-h"><h2 id="at-t">Necesita tu atención' + (atencion.length ? ' <span class="pill warn" style="vertical-align:middle">' + atencion.length + "</span>" : "") + "</h2></div>" +
+  (atencion.length ? '<div class="rows">' + atencion.join("") + "</div>" : '<div class="empty"><b style="color:var(--fg)">Todo en orden</b><span class="small">No hay pedidos, deudas vencidas, cargos sin generar ni contratos por vencer.</span></div>') + "</section>" +
   '<section class="kpis" aria-label="Resumen del mes">' +
   (() => { const a3 = aseguradoMeses(addMonths(mesDe(h), 1), 3), t = a3.reduce((x, y) => x + y.total, 0); return t || lista("contratos").length ? '<div class="kpi"><span class="kpi-l">Asegurado próximos 3 meses</span><span class="kpi-v">' + money(t) + '</span><span class="kpi-s">por contratos de horario fijo</span><button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="ir-contratos">Ver contratos</button></div>' : ""; })() +
   '<div class="kpi"><span class="kpi-l">Ocupación de ' + mesN + '</span><span class="kpi-v">' + mesPct + '%</span><div class="bar"><i style="width:' + mesPct + '%"></i></div><span class="kpi-s num">' + fmtH(mesH) + " de " + fmtH(mesD) + " disponibles</span></div>" +
@@ -1026,10 +1061,7 @@ function vistaInicio() {
   '<div class="kpi"><span class="kpi-l">Resultado de ' + mesN + '</span><span class="kpi-v" style="color:' + (cobrado - gastosMes < 0 ? "var(--bad)" : "inherit") + '">' + money(cobrado - gastosMes) + '</span><span class="kpi-s">cobrado − gastos · facturado − gastos ' + money(facturado - gastosMes) + "</span>" + (sociosAct().length ? '<button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="ver-socios-mes" data-v="' + ym + '">Ver reparto entre socios</button>' : "") + "</div>" +
   '<div class="kpi"><span class="kpi-l">Saldos pendientes ' + (esActual || esFuturo ? "hoy" : "al " + fCorta(corte)) + '</span><span class="kpi-v" style="color:' + (deudaTotal ? "var(--bad)" : "inherit") + '">' + money(deudaTotal) + '</span><span class="kpi-s">' + (vencidos.length ? vencidos.length + " con deuda vencida" : "Nadie con deuda vencida") + "</span></div></section>" +
   '<section class="panel" aria-labelledby="oc-t"><div class="panel-h"><div><h2 id="oc-t">Consultorios en ' + mesN + '</h2><span class="small muted">Tocá un consultorio para ver quién lo usa, sus horarios libres y el detalle de números.</span></div></div>' + (statsC.length ? tablaCons : '<div class="empty small">Sin consultorios.</div>') + "</section>" +
-  '<div class="cols"><section class="panel" aria-labelledby="at-t"><div class="panel-h"><h2 id="at-t">Necesita tu atención</h2></div>' +
-  (atencion.length ? '<div class="rows">' + atencion.join("") + "</div>" : '<div class="empty"><b style="color:var(--fg)">Todo en orden</b><span class="small">No hay deudas vencidas, cargos sin generar ni tareas próximas.</span></div>') + "</section>" +
-  '<section class="panel" aria-labelledby="ev-t"><div class="panel-h"><h2 id="ev-t">Últimos seis meses</h2></div><div class="panel-b">' + evol + "</div></section></div>" +
-  (esActual ? panelHoy : "");
+  '<div class="cols">' + (esActual ? panelHoy : "") + '<section class="panel" aria-labelledby="ev-t"><div class="panel-h"><h2 id="ev-t">Últimos seis meses</h2></div><div class="panel-b">' + evol + "</div></section></div>";
 }
 const fmtH = (h) => (Math.round(h * 10) / 10).toLocaleString("es-AR") + " h";
 
@@ -1120,8 +1152,10 @@ function vistaProfesionales() {
   const ps = lista("profesionales").sort((a, b) => (a.activo === false) - (b.activo === false) || String(a.nombre).localeCompare(b.nombre));
   const filas = ps.map((p) => {
     const c = cuenta(p.id);
-    const estado = p.activo === false ? '<span class="pill neutral">Inactivo</span>' : c.vencido > 0 ? '<span class="pill bad">Debe ' + money(c.vencido) + "</span>" : c.saldo > 0 ? '<span class="pill warn">Saldo ' + money(c.saldo) + "</span>" : '<span class="pill good">Al día</span>';
+    const estado0 = p.activo === false ? '<span class="pill neutral">Inactivo</span>' : c.vencido > 0 ? '<span class="pill bad">Debe ' + money(c.vencido) + "</span>" : c.saldo > 0 ? '<span class="pill warn">Saldo ' + money(c.saldo) + "</span>" : '<span class="pill good">Al día</span>';
     const fijos = lista("series").filter((s) => s.profesionalId === p.id && (!s.fin || s.fin >= hoy()));
+    const extras = p.activo === false ? "" : (!p.email ? '<span class="pill neutral">Sin mail</span>' : "") + (seriesSinContrato(p.id).length ? '<span class="pill info">Sin contrato</span>' : "");
+    const estado = '<span style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">' + extras + estado0 + "</span>";
     return '<button type="button" class="row row-btn" data-a="ver-prof" data-id="' + p.id + '"><span class="row-main"><span class="row-title">' + esc(p.nombre) + '</span><span class="small muted">' + esc([p.profesion, textoPlan(p), fijos.length ? fijos.length + " horario" + (fijos.length > 1 ? "s" : "") + " fijo" + (fijos.length > 1 ? "s" : "") : ""].filter(Boolean).join(" · ")) + "</span></span>" + estado + "</button>";
   }).join("");
   return '<div class="head"><div class="head-l"><span class="eyebrow">' + profesionalesAct().length + ' activos</span><h1>Profesionales</h1></div><div class="tools">' + (profesionalesAct().length ? '<button class="btn" data-a="pv-entrar" data-id="' + profesionalesAct()[0].id + '">Ver la app como profesional</button>' : "") + '<button class="btn primary" data-a="prof-nuevo">' + ICON.plus + "Agregar profesional</button></div></div>" +
@@ -1235,6 +1269,7 @@ function secAjustes() {
     '<div class="field"><label for="a-nombre">Nombre</label><input class="inp" id="a-nombre" name="nombre" value="' + esc(c.nombre) + '"></div>' +
     '<div class="grid2"><div class="field"><label for="a-abre">Abre</label><input class="inp" id="a-abre" name="abre" type="time" step="1800" value="' + esc(c.abre) + '"></div><div class="field"><label for="a-cierra">Cierra</label><input class="inp" id="a-cierra" name="cierra" type="time" step="1800" value="' + esc(c.cierra) + '"></div></div>' +
     '<fieldset style="border:0;padding:0;margin:0"><legend class="lbl" style="margin-bottom:6px">Días que abre</legend><div class="chips">' + DIAS.map((d, i) => '<label class="check" style="min-height:36px;padding:0 10px;border:1px solid var(--line);border-radius:18px"><input type="checkbox" name="dia' + i + '"' + ((c.diasAbiertos || [])[i] ? " checked" : "") + "> " + d + "</label>").join("") + "</div></fieldset>" +
+    '<label class="check"><input type="checkbox" name="cargosAuto"' + (c.cargosAuto === false ? "" : " checked") + '> Generar solos los cargos de cada mes al abrir la app</label>' +
     '<div class="field" style="max-width:340px"><label for="a-af">Días de aviso para liberar un día del horario fijo</label><input class="inp" id="a-af" name="diasAvisoFijo" type="number" min="0" max="60" value="' + esc(diasAvisoFijo()) + '"><span class="small muted">Con menos aviso, el profesional no puede liberarlo desde su app.</span></div>' +
     '<div class="grid2"><div class="field"><label for="a-hc">Horas sueltas: horas para cancelar sin cargo</label><input class="inp" id="a-hc" name="horasCancelacion" type="number" min="0" max="168" value="' + esc(c.horasCancelacion) + '"></div><div class="field"><label for="a-dg">Días de gracia para pagar</label><input class="inp" id="a-dg" name="diasGracia" type="number" min="0" max="60" value="' + esc(c.diasGracia) + '"></div></div>' +
     '<div class="field"><label for="a-pago">Datos para que te paguen (los ven los profesionales)</label><textarea class="inp" id="a-pago" name="datosPago" placeholder="Alias, CBU, titular y banco">' + esc(c.datosPago || "") + "</textarea></div>" +
@@ -1251,7 +1286,7 @@ function abrirModal(m) { UI.modal = m; renderModal(); }
 function cerrarModal() { UI.modal = null; $("#modalRoot").innerHTML = ""; }
 function renderModal() {
   const m = UI.modal; if (!m) { $("#modalRoot").innerHTML = ""; return; }
-  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, ctNuevo: modalContratoNuevo, ctEditar: modalContratoEditar, ctTerminar: modalContratoTerminar, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
+  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, pasarContrato: modalPasarContrato, ctNuevo: modalContratoNuevo, ctEditar: modalContratoEditar, ctTerminar: modalContratoTerminar, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
   $("#modalRoot").innerHTML = '<div class="scrim" data-a="scrim"><div class="modal' + (m.wide ? " wide" : "") + '" role="dialog" aria-modal="true" aria-labelledby="mt">' + html + "</div></div>";
   const first = $("#modalRoot [autofocus]") || $("#modalRoot input, #modalRoot select"); if (first && window.innerWidth > 700) first.focus();
 }
@@ -1312,6 +1347,8 @@ function modalProf(m) {
     '<div class="kpis"><div class="kpi"><span class="kpi-l">Saldo a hoy</span><span class="kpi-v' + (c.vencido > 0 ? '" style="color:var(--bad)' : "") + '">' + money(c.saldo) + '</span><span class="kpi-s">' + (c.vencido > 0 ? money(c.vencido) + " vencido" : c.saldo > 0 ? "dentro del plazo" : c.saldo < 0 ? "a favor" : "al día") + '</span></div><div class="kpi"><span class="kpi-l">Reservas próximas</span><span class="kpi-v">' + money(c.futuros) + '</span><span class="kpi-s">se cargan en su fecha</span></div></div>' +
     '<div class="tools"><button type="button" class="btn primary" data-a="pago-nuevo" data-id="' + p.id + '">Registrar pago</button><button type="button" class="btn" data-a="pv-entrar" data-id="' + p.id + '">Ver la app como ' + esc(p.nombre.split(" ")[0]) + "</button>" + '<button type="button" class="btn" data-a="cargo-nuevo" data-id="' + p.id + '">Cargo o descuento</button><button type="button" class="btn" data-a="copiar-estado" data-id="' + p.id + '">Copiar estado de cuenta</button></div>' +
     '<dl class="kv"><dt>Profesión</dt><dd>' + esc(p.profesion || "—") + "</dd><dt>Teléfono</dt><dd>" + esc(p.telefono || "—") + "</dd><dt>Email</dt><dd>" + esc(p.email || "—") + "</dd><dt>Cómo paga</dt><dd>" + esc(textoPlan(p)) + "</dd>" + (() => { const hs = horasSemanaFijas(p.id), plan = Number(p.horasPlan) || 0; if (!hs && !plan) return ""; return "<dt>Horas por semana</dt><dd>" + fmtH(hs) + " en horarios fijos" + (plan ? " de " + fmtH(plan) + " de su plan" + (hs > plan ? ' <span class="pill warn">' + fmtH(hs - plan) + " de más</span>" : hs < plan ? ' <span class="pill info">' + fmtH(plan - hs) + " sin usar</span>" : ' <span class="pill good">Justo</span>') : "") + "</dd>"; })() + (p.notas ? "<dt>Notas</dt><dd>" + esc(p.notas) + "</dd>" : "") + "</dl>" +
+    (seriesSinContrato(p.id).length ? '<div class="note info" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><span>Sus horarios fijos todavía no tienen contrato: sin plazo ni ajuste automático.</span><button type="button" class="btn sm primary" data-a="pasar-contrato" data-id="' + p.id + '">Pasar a contrato</button></div>' : "") +
+    (contratosDe(p.id).filter((c) => c.fin >= hoy()).length ? '<div><h3 style="margin-bottom:8px">Contratos</h3><div style="display:flex;flex-direction:column;gap:8px">' + contratosDe(p.id).filter((c) => c.fin >= hoy()).map((c) => cardContrato(c, true)).join("") + "</div></div>" : "") +
     '<div><h3 style="margin-bottom:8px">Horarios fijos</h3>' + (series.length ? '<div class="panel rows">' + series.map((s) => { const prox = fechasSerie(s.inicio > hoy() ? s.inicio : hoy(), s.fin || null, s.dia, 1)[0]; return '<button type="button" class="row row-btn"' + (prox ? ' data-a="ver-item" data-key="s:' + s.id + ":" + prox + '"' : " disabled") + '><span class="dot ty-contrato"></span><span class="row-main"><span class="row-title">' + DIAS_L[s.dia].replace(/^./, (x) => x.toUpperCase()) + " " + hm(s.desde) + "–" + hm(s.hasta) + '</span><span class="small muted">' + esc(nomCons(s.consultorioId)) + " · desde " + fCorta(s.inicio) + (s.fin ? " hasta " + fCorta(s.fin) : "") + (prox ? " · próximo " + fCorta(prox) : "") + "</span></span></button>"; }).join("") + "</div>" : '<p class="small muted" style="margin:0">Sin horarios fijos. Creálos desde la agenda con "Horario fijo semanal".</p>') + "</div>" +
     (prox.length ? '<div><h3 style="margin-bottom:8px">Próximas reservas sueltas</h3><div class="panel rows">' + prox.map((o) => '<button type="button" class="row row-btn" data-a="ver-item" data-key="o:' + o.id + '"><span class="dot ty-reserva"></span><span class="row-main"><span class="row-title">' + DIAS[wd(o.fecha)] + " " + fCorta(o.fecha) + " · " + hm(o.desde) + "–" + hm(o.hasta) + '</span><span class="small muted">' + esc(nomCons(o.consultorioId)) + "</span></span><span class=\"amount\">" + money(o.importe || 0) + "</span></button>").join("") + "</div></div>" : "") +
     '<div><h3 style="margin-bottom:8px">Movimientos</h3>' + (c.movs.length ? '<div class="panel rows">' + c.movs.slice().reverse().slice(0, 40).map((mv) => movRow(mv, false)).join("") + "</div>" : '<p class="small muted" style="margin:0">Sin movimientos todavía.</p>') + "</div>" +
@@ -1603,6 +1640,7 @@ document.addEventListener("click", async (e) => {
       if (paraDueno) { cerrarModal(); UI.tab = "mas"; UI.seccionMas = "contratos"; } else UI.pvTab = "inicio";
       render(); window.scrollTo(0, 0); toast(pend ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
     }
+    case "pasar-contrato": abrirModal({ t: "pasarContrato", id }); break;
     case "ct-nuevo": UI.cf = null; abrirModal({ t: "ctNuevo", wide: true }); break;
     case "ct-editar": abrirModal({ t: "ctEditar", id }); break;
     case "ct-terminar": abrirModal({ t: "ctTerminar", id }); break;
@@ -1848,6 +1886,11 @@ document.addEventListener("submit", async (e) => {
       else if (D.socmov["gp-" + gid]) await del("socmov", "gp-" + gid);
       UI.mesGastos = mesDe(g("fecha") || hoy()); cerrarModal(); toast("Gasto guardado"); break;
     }
+    case "pasar-contrato": {
+      const pid = UI.modal.id; if (!seriesSinContrato(pid).length) return cerrarModal();
+      await pasarAContrato(pid, Number(g("plazo")) || 12, g("inicio") || primeroMesSig(), Number(g("precio")) || 0, Number(g("ajustePct")) || 0);
+      cerrarModal(); toast("Listo: " + nomProf(pid) + " ya tiene contrato desde el " + fCorta(g("inicio"))); break;
+    }
     case "ct-editar": {
       const c = D.contratos[UI.modal.id]; if (!c) return;
       await put("contratos", c.id, { ...c, precio: Number(g("precio")) || 0, ajustePct: Number(g("ajustePct")) || 0 });
@@ -1910,7 +1953,7 @@ document.addEventListener("submit", async (e) => {
       const dias = DIAS.map((_, i) => fd.get("dia" + i) === "on");
       const abre = g("abre") || "08:00", cierra = g("cierra") || "21:00";
       if (toMin(cierra) <= toMin(abre)) return toast("La hora de cierre tiene que ser posterior a la de apertura.");
-      await putConfig({ nombre: g("nombre"), abre, cierra, diasAbiertos: dias, horasCancelacion: Number(g("horasCancelacion")) || 0, diasAvisoFijo: Number(g("diasAvisoFijo")) || 0, diasGracia: Number(g("diasGracia")) || 0, datosPago: String(fd.get("datosPago") || "").trim(), configurado: true });
+      await putConfig({ nombre: g("nombre"), abre, cierra, diasAbiertos: dias, horasCancelacion: Number(g("horasCancelacion")) || 0, diasAvisoFijo: Number(g("diasAvisoFijo")) || 0, cargosAuto: fd.get("cargosAuto") === "on", diasGracia: Number(g("diasGracia")) || 0, datosPago: String(fd.get("datosPago") || "").trim(), configurado: true });
       toast("Cambios guardados"); break;
     }
   }
