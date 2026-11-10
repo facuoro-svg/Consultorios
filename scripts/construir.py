@@ -146,7 +146,7 @@ async function iniciar() {
   const { data: { session } } = await SB.auth.getSession();
   if (!session) return pantallaLogin();
   const { data: v, error } = await SB.rpc("vincular");
-  if (error) { console.error(error); return pantallaLogin({ tipo: "warn", html: "No pude conectar con la base de datos. Probá de nuevo en un rato.", salir: true, sinForm: true }); }
+  if (error) { console.error(error); return pantallaLogin({ tipo: "warn", html: "No pude conectar con la base de datos.<br><small>" + esc((error.code ? error.code + " · " : "") + (error.message || "")) + "</small>", salir: true, sinForm: true }); }
   MI_MAIL = v.email || session.user.email || "";
   if (!v.rol) return pantallaLogin({ tipo: "warn", html: "Entraste como <b>" + esc(MI_MAIL) + "</b>, pero ese mail no está cargado en ningún profesional. Pedile al dueño que lo agregue en tu ficha y volvé a entrar.", salir: true, sinForm: true });
   ROL = v.rol; MI_PROF = v.prof_id || null;
