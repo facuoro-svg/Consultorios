@@ -183,6 +183,13 @@ table.t .r { text-align: right; font-variant-numeric: tabular-nums; }
 .rep-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .rep-list span { font-size: .78rem; padding: 3px 8px; border-radius: 8px; background: var(--good-soft, color-mix(in srgb, var(--good) 14%, var(--surface))); }
 .rep-list span.no { background: color-mix(in srgb, var(--bad) 14%, var(--surface)); text-decoration: line-through; }
+.ct-card { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
+.ct-card .ct-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+.franja { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--sunken); font-weight: 600; font-size: .9rem; }
+.franja .spacer { margin-left: auto; }
+.sumario { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.sumario > div { background: var(--sunken); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.sumario b { font-size: 1.15rem; }
 .slot-scale { display: flex; justify-content: space-between; font-size: .7rem; color: var(--faint); font-variant-numeric: tabular-nums; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .78rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -308,7 +315,7 @@ const ICON = {
 const TABS = [["inicio", "Inicio"], ["agenda", "Agenda"], ["profesionales", "Profesionales"], ["cobros", "Cobros"], ["mas", "Más"]];
 
 /* ============ Datos ============ */
-const COLS = ["consultorios", "profesionales", "series", "ocupaciones", "movimientos", "gastos", "tareas", "socios", "socmov", "avisos"];
+const COLS = ["consultorios", "profesionales", "series", "ocupaciones", "movimientos", "gastos", "tareas", "socios", "socmov", "avisos", "contratos"];
 const DEF_CONFIG = { nombre: "", abre: "08:00", cierra: "21:00", diasAbiertos: [true, true, true, true, true, true, false], horasCancelacion: 24, diasGracia: 5, configurado: false, tarifario: { hora: 0, modulos: [], historial: [] } };
 const D = { config: { ...DEF_CONFIG } };
 COLS.forEach((c) => (D[c] = {}));
@@ -377,7 +384,7 @@ function itemsDelDia(fecha) {
   }
   for (const s of lista("series")) {
     if (s.dia === w && s.inicio <= fecha && (!s.fin || fecha <= s.fin) && !(s.excepciones || {})[fecha]) {
-      out.push({ kind: "serie", id: s.id, key: "s:" + s.id + ":" + fecha, consultorioId: s.consultorioId, profesionalId: s.profesionalId || null, tipo: s.tipo, desde: s.desde, hasta: s.hasta, fecha, nota: s.nota || "", socioId: s.socioId || null });
+      out.push({ kind: "serie", id: s.id, key: "s:" + s.id + ":" + fecha, consultorioId: s.consultorioId, profesionalId: s.profesionalId || null, tipo: s.tipo, desde: s.desde, hasta: s.hasta, fecha, nota: s.nota || "", socioId: s.socioId || null, contratoId: s.contratoId || null, estado: s.estado || undefined });
     }
   }
   return out.sort((a, b) => a.desde - b.desde);
@@ -417,7 +424,82 @@ function fechasSerie(inicio, fin, dia, semanas) {
   for (let i = 0; i < semanas; i++) { if (fin && f > fin) break; out.push(f); f = addDays(f, 7); }
   return out;
 }
-const tarifario = () => ({ hora: 0, modulos: [], historial: [], ...(D.config.tarifario || {}) });
+const tarifario = () => ({ hora: 0, modulos: [], historial: [], recargoSuelta: 20, anticipacionSuelta: 14, ajustePct: 10, ...(D.config.tarifario || {}) });
+/* ============ Contratos de horario fijo ============ */
+const PLAZOS = [[1, "Mensual"], [3, "Trimestral"], [6, "Semestral"], [12, "Anual"]];
+const nomPlazo = (n) => (PLAZOS.find((x) => x[0] === Number(n)) || [0, n + " meses"])[1];
+const addMeses = (iso, n) => { const d = fromISO(iso), dia = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(dia, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return toISO(d); };
+const mesesEntre = (a, b) => { const x = fromISO(a), y = fromISO(b); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth() - (y.getDate() < x.getDate() ? 1 : 0); };
+const finContrato = (inicio, meses) => addDays(addMeses(inicio, meses), -1);
+const recargoSuelta = () => Number(tarifario().recargoSuelta) || 0;
+const anticipSuelta = () => Number(tarifario().anticipacionSuelta) || 14;
+const precioSuelta = (pid, cons) => Math.round(precioHora(pid, cons) * (1 + recargoSuelta() / 100));
+const contratosDe = (pid) => lista("contratos").filter((c) => c.profesionalId === pid && c.estado !== "cancelado").sort((a, b) => (a.inicio < b.inicio ? -1 : 1));
+const contratoVigente = (c, f) => c.estado !== "cancelado" && c.inicio <= f && f <= c.fin;
+const horasFranjas = (fr) => (fr || []).reduce((t, x) => t + (x.hasta - x.desde) / 60, 0);
+// Precio mensual por horas semanales: la combinación más barata de módulos + horas sueltas al precio de hora
+function precioSemanal(horas) {
+  const H = Math.round(horas * 2), mods = tarifario().modulos.filter((m) => Number(m.horas) > 0 && Number(m.precio) > 0);
+  const media = tarifaHora() * 0.5 * 52 / 12, best = [0];
+  for (let h = 1; h <= H; h++) {
+    let b = best[h - 1] + media;
+    for (const m of mods) { const mh = Math.round(Number(m.horas) * 2); b = Math.min(b, best[Math.max(0, h - mh)] + Number(m.precio)); }
+    best.push(b);
+  }
+  return Math.round((best[H] || 0) / 100) * 100;
+}
+const ajustesHasta = (c, f) => Math.max(0, Math.floor(mesesEntre(c.inicio, f) / 3));
+const precioContrato = (c, f) => Math.round(Number(c.precio || 0) * Math.pow(1 + Number(c.ajustePct || 0) / 100, ajustesHasta(c, f || hoy())) / 100) * 100;
+function proxAjuste(c, desde) { const f = addMeses(c.inicio, 3 * (ajustesHasta(c, desde || hoy()) + 1)); return Number(c.ajustePct) > 0 && f <= c.fin ? f : null; }
+function textoFranjas(fr) { return (fr || []).slice().sort((a, b) => a.dia - b.dia || a.desde - b.desde).map((x) => DIAS[x.dia] + " " + hm(x.desde) + "–" + hm(x.hasta) + " · " + nomCons(x.consultorioId)).join(" / "); }
+// ¿Está libre esta franja todas las semanas entre inicio y fin? (ignora las series del propio contrato)
+function franjaLibre(fr, inicio, fin, pid, ignorarContrato) {
+  for (let f = fechasSerie(inicio, fin, fr.dia, 1)[0]; f && f <= fin; f = addDays(f, 7)) {
+    if (!abierto(f)) return { ok: false, f, motivo: "cerrado" };
+    const its = itemsDelDia(f).filter((x) => !(ignorarContrato && x.contratoId === ignorarContrato));
+    if (its.some((x) => x.consultorioId === fr.consultorioId && solapa(fr.desde, fr.hasta, x.desde, x.hasta))) return { ok: false, f, motivo: "ocupado" };
+    if (pid && its.some((x) => x.profesionalId === pid && solapa(fr.desde, fr.hasta, x.desde, x.hasta))) return { ok: false, f, motivo: "propio" };
+  }
+  return { ok: true };
+}
+async function crearContrato(d) {
+  const id = uid(), fin = finContrato(d.inicio, d.plazo);
+  const precio = d.precio != null ? Number(d.precio) : precioSemanal(horasFranjas(d.franjas));
+  const estado = d.estado || "activo";
+  const seriesIds = [];
+  for (const fr of d.franjas) {
+    const sid = uid(); seriesIds.push(sid);
+    await put("series", sid, { consultorioId: fr.consultorioId, profesionalId: d.profesionalId, dia: fr.dia, desde: fr.desde, hasta: fr.hasta, inicio: d.inicio, fin, tipo: "contrato", contratoId: id, nota: "", ...(estado === "pendiente" ? { estado: "pendiente" } : {}) });
+  }
+  await put("contratos", id, { profesionalId: d.profesionalId, franjas: d.franjas, plazo: Number(d.plazo), mesesTotal: Number(d.plazo), inicio: d.inicio, fin, precio, ajustePct: Number(d.ajustePct != null ? d.ajustePct : tarifario().ajustePct) || 0, estado, seriesIds, origen: d.origen || "dueno", creado: new Date().toISOString() });
+  return id;
+}
+async function setSeriesContrato(c, cambios) {
+  for (const s of lista("series").filter((x) => x.contratoId === c.id)) { const n = { ...s, ...cambios }; if (cambios.estado === null) delete n.estado; await put("series", s.id, n); }
+}
+async function renovarContrato(c) {
+  const total = (Number(c.mesesTotal) || mesesEntre(c.inicio, addDays(c.fin, 1))) + Number(c.plazo), nuevoFin = finContrato(c.inicio, total);
+  for (const fr of c.franjas) { const r = franjaLibre(fr, addDays(c.fin, 1), nuevoFin, c.profesionalId, c.id); if (!r.ok) return { ok: false, f: r.f, fr }; }
+  await put("contratos", c.id, { ...c, fin: nuevoFin, mesesTotal: total, renovado: hoy() });
+  await setSeriesContrato(c, { fin: nuevoFin });
+  return { ok: true, fin: nuevoFin };
+}
+async function terminarContrato(c, fecha) {
+  await put("contratos", c.id, { ...c, fin: fecha, estado: fecha < c.inicio ? "cancelado" : c.estado, terminado: hoy() });
+  await setSeriesContrato(c, { fin: fecha });
+}
+function cargosContratosMes(ym) {
+  const ini = ym + "-01", n = diasDelMes(ym), fin = ym + "-" + pad(n), out = [];
+  for (const c of lista("contratos")) {
+    if (c.estado !== "activo" || c.inicio > fin || c.fin < ini) continue;
+    const a = c.inicio > ini ? c.inicio : ini, b = c.fin < fin ? c.fin : fin;
+    const dias = Math.round((fromISO(b) - fromISO(a)) / 864e5) + 1, precio = precioContrato(c, a);
+    const importe = Math.round((precio * dias) / n / 100) * 100;
+    if (importe > 0) out.push({ id: "con-" + ym + "-" + c.id, profesionalId: c.profesionalId, importe, concepto: "Horario fijo " + mesLabel(ym).toLowerCase() + (dias < n ? " (" + dias + " de " + n + " días)" : ""), detalle: textoFranjas(c.franjas) });
+  }
+  return out;
+}
+function aseguradoMeses(desdeYm, k) { const out = []; for (let i = 0; i < k; i++) { const ym = addMonths(desdeYm, i); out.push({ ym, total: cargosContratosMes(ym).reduce((t, x) => t + x.importe, 0) }); } return out; }
 const tarifaHora = () => Number(tarifario().hora) || 0;
 const precioHora = (profId, consId) => {
   const p = prof(profId), c = cons(consId);
@@ -436,7 +518,7 @@ function horasExtraMes(p, ym) {
   for (let d = 1; d <= n; d++) {
     const f = ym + "-" + pad(d), k = addDays(f, -wd(f));
     for (const s of lista("series")) {
-      if (s.profesionalId !== p.id || s.tipo !== "contrato" || s.dia !== wd(f) || s.inicio > f || (s.fin && f > s.fin)) continue;
+      if (s.contratoId || s.profesionalId !== p.id || s.tipo !== "contrato" || s.dia !== wd(f) || s.inicio > f || (s.fin && f > s.fin)) continue;
       const ex = (s.excepciones || {})[f]; if (ex && !ex.tarde) continue;
       (sem[k] = sem[k] || []).push({ hs: (s.hasta - s.desde) / 60, precio: precioHora(p.id, s.consultorioId) });
     }
@@ -496,7 +578,7 @@ function venceCargoMensual(ym) {
   return a > b ? a : b;
 }
 function cargosPropuestosMes(ym) {
-  const out = [];
+  const out = cargosContratosMes(ym).filter((c) => prof(c.profesionalId) && prof(c.profesionalId).activo !== false);
   const n = diasDelMes(ym);
   for (const p of profesionalesAct()) {
     if (p.modalidad === "mensual") {
@@ -507,7 +589,7 @@ function cargosPropuestosMes(ym) {
       for (let d = 1; d <= n; d++) {
         const f = ym + "-" + pad(d);
         for (const s of lista("series")) {
-          if (s.profesionalId !== p.id || s.tipo !== "contrato" || s.dia !== wd(f) || s.inicio > f || (s.fin && f > s.fin)) continue;
+          if (s.contratoId || s.profesionalId !== p.id || s.tipo !== "contrato" || s.dia !== wd(f) || s.inicio > f || (s.fin && f > s.fin)) continue;
           const ex = (s.excepciones || {})[f];
           if (ex && !ex.tarde) continue;
           const hs = (s.hasta - s.desde) / 60; horas += hs; total += hs * precioHora(p.id, s.consultorioId);
@@ -638,7 +720,7 @@ function render() {
 }
 
 /* ============ Vista del profesional ============ */
-const PV_TABS = [["inicio", "Inicio", "inicio"], ["reservar", "Reservar", "agenda"], ["cuenta", "Mi cuenta", "cobros"], ["avisos", "Avisos", "avisos"]];
+const PV_TABS = [["inicio", "Inicio", "inicio"], ["horario", "Horario fijo", "agenda"], ["reservar", "Hora suelta", "plus"], ["cuenta", "Mi cuenta", "cobros"], ["avisos", "Avisos", "avisos"]];
 const ahoraMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
 const itemsProf = (f, pid) => itemsDelDia(f).filter((x) => x.profesionalId === pid);
 function libreEn(f, consId, desde, hasta) { return !itemsDelDia(f).some((x) => x.consultorioId === consId && solapa(desde, hasta, x.desde, x.hasta)); }
@@ -650,7 +732,7 @@ function renderProf() {
   $("#brandName").textContent = D.config.nombre || "Mis Consultorios";
   $("#brandSub").textContent = p.nombre;
   const banner = '<div class="pv-banner" role="note"><b>Vista de profesional</b><label for="pvSel" class="small">Así ve la app</label><select id="pvSel" class="sel auto" data-change="pv-prof">' + profesionalesAct().map((x) => '<option value="' + x.id + '"' + (x.id === p.id ? " selected" : "") + ">" + esc(x.nombre) + "</option>").join("") + '</select><span class="small" style="flex:1 1 220px">No ve a los demás profesionales, ni gastos, ni socios. Lo que reserves o avises acá se guarda de verdad, como si lo hiciera esa persona.</span><button type="button" class="btn sm" data-a="pv-salir">Volver a la vista de dueño</button></div>';
-  const body = ({ inicio: pvInicio, reservar: pvReservar, cuenta: pvCuenta, avisos: pvAvisos }[UI.pvTab] || pvInicio)(p);
+  const body = ({ inicio: pvInicio, horario: pvHorario, reservar: pvReservar, cuenta: pvCuenta, avisos: pvAvisos }[UI.pvTab] || pvInicio)(p);
   $("#main").innerHTML = '<div class="wrap">' + banner + '<div class="pv">' + body + "</div></div>";
 }
 function pvFila(x, conFecha) {
@@ -674,23 +756,24 @@ function pvInicio(p) {
     (prox ? '<div class="pv-hero"><span class="pv-k">Tu próximo horario</span><span class="pv-big">' + (prox.fecha === h ? "Hoy" : prox.fecha === addDays(h, 1) ? "Mañana" : DIAS_L[wd(prox.fecha)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(prox.fecha)) + " · " + hm(prox.desde) + "–" + hm(prox.hasta) + "</span><span>" + esc(nomCons(prox.consultorioId)) + (prox.estado === "pendiente" ? " · esperando aprobación" : "") + "</span></div>" : '<div class="pv-hero"><span class="pv-k">Tu próximo horario</span><span class="pv-big">No tenés horarios próximos</span></div>') +
     '<div class="kpis"><div class="kpi"><span class="kpi-l">' + (c.saldo > 0 ? "Tenés para pagar" : "Tu cuenta") + '</span><span class="kpi-v" style="color:' + (c.vencido > 0 ? "var(--bad)" : c.saldo > 0 ? "inherit" : "var(--good)") + '">' + (c.saldo > 0 ? money(c.saldo) : "Al día") + '</span><span class="kpi-s">' + (c.vencido > 0 ? money(c.vencido) + " vencido" : c.saldo < 0 ? "Saldo a favor " + money(-c.saldo) : c.saldo > 0 ? "Dentro del plazo" : "No debés nada") + '</span><button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="pv-tab" data-v="cuenta">Ver mi cuenta</button></div>' +
     '<div class="kpi"><span class="kpi-l">Esta semana</span><span class="kpi-v">' + fmtH(fijas + sueltas) + '</span><span class="kpi-s">' + fmtH(fijas) + " fijas" + (sueltas ? " + " + fmtH(sueltas) + " reservadas" : "") + (plan ? " · tu plan: " + fmtH(plan) : "") + "</span></div></div>" +
-    '<section class="panel"><div class="panel-h"><h2>Tus próximos 7 días</h2><button type="button" class="btn sm primary" data-a="pv-tab" data-v="reservar">' + ICON.plus + "Reservar</button></div>" + (dias.length ? dias.join("") : '<div class="empty small">No tenés horarios esta semana.</div>') + "</section>" +
+    (() => { const cs = contratosDe(p.id).filter((c) => c.fin >= hoy()); if (!cs.length) return '<div class="note info" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><span>Asegurate tu consultorio fijo todas las semanas, con cuota mensual.</span><button type="button" class="btn sm primary" data-a="pv-tab" data-v="horario">Armar mi horario fijo</button></div>'; return '<div style="display:flex;flex-direction:column;gap:10px">' + cs.map((c) => cardContrato(c, false)).join("") + "</div>"; })() +
+    '<section class="panel"><div class="panel-h"><h2>Tus próximos 7 días</h2><button type="button" class="btn sm" data-a="pv-tab" data-v="reservar">' + ICON.plus + "Hora suelta</button></div>" + (dias.length ? dias.join("") : '<div class="empty small">No tenés horarios esta semana.</div>') + "</section>" +
     '<section class="panel"><div class="panel-h"><h2>Tu plan</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:600">' + esc(textoPlan(p)) + '</span><span class="small muted">Las reservas fuera de tu plan se cobran a ' + money(precioHora(p.id, null)) + " la hora. Si cancelás con menos de " + Number(D.config.horasCancelacion || 24) + " h, se cobra igual.</span></div></section>";
 }
 function pvReservar(p) {
   const h = hoy(), a = abreMin(), cz = cierraMin(), dur = UI.pvDur || 60;
   const f = UI.pvFecha && UI.pvFecha >= h ? UI.pvFecha : h;
   const chips = [];
-  for (let i = 0; i < 35; i++) { const d = addDays(h, i), ab = abierto(d); chips.push('<button type="button" class="daychip" data-a="pv-dia" data-fecha="' + d + '" aria-pressed="' + (d === f) + '"' + (ab ? "" : " disabled") + "><small>" + (i === 0 ? "Hoy" : DIAS[wd(d)]) + "</small>" + fromISO(d).getDate() + "</button>"); }
+  for (let i = 0; i <= anticipSuelta(); i++) { const d = addDays(h, i), ab = abierto(d); chips.push('<button type="button" class="daychip" data-a="pv-dia" data-fecha="' + d + '" aria-pressed="' + (d === f) + '"' + (ab ? "" : " disabled") + "><small>" + (i === 0 ? "Hoy" : DIAS[wd(d)]) + "</small>" + fromISO(d).getDate() + "</button>"); }
   const durs = [[60, "1 h"], [90, "1½ h"], [120, "2 h"], [180, "3 h"], [240, "4 h"], [360, "6 h"]];
   const c = cuenta(p.id);
-  let html = "<h1>Reservar</h1>" +
+  let html = "<h1>Hora suelta</h1>" + '<p class="muted" style="margin:0">Para una consulta puntual, hasta ' + anticipSuelta() + " días antes" + (recargoSuelta() ? ", a " + money(precioSuelta(p.id, null)) + " la hora" : "") + '. ¿La necesitás todas las semanas? <button type="button" class="btn ghost sm" style="padding:0;min-height:0" data-a="pv-tab" data-v="horario">Armá tu horario fijo</button>, sale más barato.</p>' +
     '<div class="pv-step"><b>1</b>Elegí el día</div><div class="daychips" role="group" aria-label="Día">' + chips.join("") + "</div>" +
     '<div class="pv-step"><b>2</b>¿Cuánto tiempo?</div><div class="seg" role="group" aria-label="Duración" style="flex-wrap:wrap">' + durs.map(([m, l]) => '<button type="button" data-a="pv-dur" data-v="' + m + '" aria-pressed="' + (dur === m) + '">' + l + "</button>").join("") + "</div>" +
     (c.vencido > 0 ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido. Tus reservas quedan esperando la aprobación del dueño hasta que regularices.</div>" : "");
   if (!abierto(f)) return html + '<div class="panel"><div class="empty">Ese día el lugar está cerrado. Elegí otro día.</div></div>';
   const minIni = f === h ? Math.ceil(ahoraMin() / 30) * 30 : a;
-  const precio = Math.round(precioHora(p.id, null) * dur / 60);
+  const precio = Math.round(precioSuelta(p.id, null) * dur / 60);
   const mios = itemsProf(f, p.id);
   const filas = consultoriosAct().map((k) => {
     const libres = [];
@@ -699,7 +782,7 @@ function pvReservar(p) {
       (libres.length ? '<div class="slots">' + libres.map((m) => '<button type="button" class="slot" data-a="pv-slot" data-cons="' + k.id + '" data-v="' + m + '" aria-label="Reservar ' + esc(k.nombre) + " de " + hm(m) + " a " + hm(m + dur) + '">' + hm(m) + "</button>").join("") + "</div>" : '<span class="small muted">No hay ' + fmtH(dur / 60) + " seguidas libres este día.</span>") + "</div>";
   }).join("");
   return html + '<div class="pv-step"><b>3</b>Tocá la hora de inicio</div>' +
-    '<section class="panel"><div class="panel-h"><div><h2>' + esc(DIAS_L[wd(f)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(f)) + '</h2><span class="small muted">Horarios libres para ' + fmtH(dur / 60) + ". En el paso siguiente podés repetirla todas las semanas.</span></div><span class=\"small muted\">" + money(precio) + " por vez</span></div>" + '<div class="rows">' + filas + "</div></section>";
+    '<section class="panel"><div class="panel-h"><div><h2>' + esc(DIAS_L[wd(f)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(f)) + '</h2><span class="small muted">Horarios libres para ' + fmtH(dur / 60) + ".</span></div><span class=\"small muted\">" + money(precio) + " por vez</span></div>" + '<div class="rows">' + filas + "</div></section>";
 }
 function pvCuenta(p) {
   const c = cuenta(p.id);
@@ -739,11 +822,11 @@ function semanasRep(m, n) {
   return out;
 }
 function modalPvConfirm(m) {
-  const p = prof(UI.profVista), c = cuenta(p.id), precio = Math.round(precioHora(p.id, m.cons) * (m.hasta - m.desde) / 60);
-  const quedaPend = c.vencido > 0, n = Number(m.rep || 1), sem = semanasRep(m, n), okN = sem.filter((x) => x.ok).length;
+  const p = prof(UI.profVista), c = cuenta(p.id), precio = Math.round(precioSuelta(p.id, m.cons) * (m.hasta - m.desde) / 60);
+  const quedaPend = c.vencido > 0, n = 1, sem = semanasRep(m, n), okN = sem.filter((x) => x.ok).length;
   const ops = [[1, "Solo este día"], [4, "Todas las semanas, 1 mes"], [8, "Todas las semanas, 2 meses"], [13, "Todas las semanas, 3 meses"], [26, "Todas las semanas, 6 meses"]];
   return mHead("Confirmar reserva") + '<div class="modal-b"><dl class="kv"><dt>Consultorio</dt><dd>' + esc(nomCons(m.cons)) + "</dd><dt>Día</dt><dd>" + esc(fLarga(m.fecha)) + '</dd><dt>Horario</dt><dd class="num">' + hm(m.desde) + " a " + hm(m.hasta) + "</dd></dl>" +
-    '<div class="field"><label for="pv-rep">Repetir</label><select class="sel" id="pv-rep" data-change="pv-rep">' + ops.map(([v, l]) => '<option value="' + v + '"' + (v === n ? " selected" : "") + ">" + l + (v > 1 ? " (los " + DIAS_L[wd(m.fecha)] + ")" : "") + "</option>").join("") + "</select></div>" +
+
     (n > 1 ? '<div class="rep-list">' + sem.map((x) => '<span class="' + (x.ok ? "" : "no") + '">' + fCorta(x.f) + "</span>").join("") + "</div>" + (okN < n ? '<p class="small muted" style="margin:0">Las fechas tachadas están ocupadas o cerradas y se saltean.</p>' : "") : "") +
     '<dl class="kv"><dt>Costo</dt><dd>' + money(precio * okN) + ' <span class="muted" style="font-weight:400">' + (okN > 1 ? okN + " veces de " + money(precio) + ", cada una se carga en su fecha" : "se suma a tu cuenta") + "</span></dd></dl>" +
     '<div class="note ' + (quedaPend ? "warn" : "info") + '">' + (quedaPend ? "Como tenés saldo vencido, queda <b>esperando la aprobación del dueño</b>." : "Queda <b>confirmada</b> al instante.") + " Si cancelás un día con menos de " + Number(D.config.horasCancelacion || 24) + " h, ese día se cobra igual.</div>" +
@@ -756,6 +839,93 @@ function modalPvPago() {
     '<div class="field"><label for="pp-medio">Cómo pagaste</label><select class="sel" id="pp-medio" name="medio"><option>Transferencia</option><option>Mercado Pago</option><option>Efectivo</option></select></div>' +
     '<div class="field"><label for="pp-nota">Nota (opcional)</label><input class="inp" id="pp-nota" name="nota" placeholder="Ej.: número de operación"></div>' +
     '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Enviar aviso</button></div></form>';
+}
+
+/* ---- Armador de horario fijo ---- */
+function cfEstado(pid) {
+  if (!UI.cf || UI.cf.pid !== pid) {
+    let ini = hoy(); if (!abierto(ini)) ini = addDays(ini, 1);
+    UI.cf = { pid, franjas: [], plazo: 6, inicio: ini, dia: (wd(hoy()) + 1) % 6, dur: 240 };
+  }
+  return UI.cf;
+}
+function armadorHTML(pid, paraDueno) {
+  const S = cfEstado(pid), fin = finContrato(S.inicio, S.plazo), a = abreMin(), cz = cierraMin();
+  const diasAb = [0, 1, 2, 3, 4, 5, 6].filter((i) => (D.config.diasAbiertos || DEF_CONFIG.diasAbiertos)[i]);
+  if (diasAb.indexOf(S.dia) === -1) S.dia = diasAb[0] || 0;
+  const durs = [[120, "2 h"], [180, "3 h"], [240, "4 h"], [300, "5 h"], [360, "6 h"], [480, "8 h"]];
+  const elegidas = S.franjas;
+  const choca = (fr) => elegidas.some((x) => x.dia === fr.dia && solapa(fr.desde, fr.hasta, x.desde, x.hasta));
+  const filas = consultoriosAct().map((k) => {
+    const libres = [];
+    for (let m = a; m + S.dur <= cz; m += 30) { const fr = { consultorioId: k.id, dia: S.dia, desde: m, hasta: m + S.dur }; if (!choca(fr) && franjaLibre(fr, S.inicio, fin, pid).ok) libres.push(m); }
+    return '<div class="row" style="flex-direction:column;align-items:stretch;gap:8px"><span class="row-title">' + esc(k.nombre) + "</span>" +
+      (libres.length ? '<div class="slots">' + libres.map((m) => '<button type="button" class="slot" data-a="cf-add" data-cons="' + k.id + '" data-v="' + m + '">' + hm(m) + "</button>").join("") + "</div>" : '<span class="small muted">No hay ' + fmtH(S.dur / 60) + " libres todos los " + DIAS_L[S.dia] + " de ese período.</span>") + "</div>";
+  }).join("");
+  const horas = horasFranjas(elegidas), precio = precioSemanal(horas), ajuste = Number(tarifario().ajustePct) || 0;
+  const c = cuenta(pid), pend = !paraDueno && c.vencido > 0;
+  return '<div class="pv-step"><b>1</b>Plazo y desde cuándo</div>' +
+    '<div class="tools"><div class="seg" role="group" aria-label="Plazo">' + PLAZOS.map(([n, l]) => '<button type="button" data-a="cf-plazo" data-v="' + n + '" aria-pressed="' + (S.plazo === n) + '">' + l + "</button>").join("") + "</div>" +
+    '<div class="field" style="width:170px"><label for="cf-ini">Empieza</label><input class="inp" type="date" id="cf-ini" data-change="cf-ini" min="' + hoy() + '" value="' + S.inicio + '"></div><span class="small muted" style="align-self:center">Hasta el ' + fCorta(fin) + "/" + fin.slice(2, 4) + "</span></div>" +
+    '<div class="pv-step"><b>2</b>Sumá tus horarios de cada semana</div>' +
+    '<div class="tools"><div class="seg" role="group" aria-label="Día">' + diasAb.map((i) => '<button type="button" data-a="cf-dia" data-v="' + i + '" aria-pressed="' + (S.dia === i) + '">' + DIAS[i] + "</button>").join("") + '</div><div class="seg" role="group" aria-label="Duración">' + durs.map(([m, l]) => '<button type="button" data-a="cf-dur" data-v="' + m + '" aria-pressed="' + (S.dur === m) + '">' + l + "</button>").join("") + "</div></div>" +
+    '<section class="panel"><div class="panel-h"><div><h2>Libres todos los ' + DIAS_L[S.dia] + '</h2><span class="small muted">Tocá la hora de inicio para sumarla. Solo aparecen los horarios libres durante todo el plazo.</span></div></div><div class="rows">' + filas + "</div></section>" +
+    '<div class="pv-step"><b>3</b>Revisá y confirmá</div>' +
+    '<section class="panel"><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
+    (elegidas.length ? '<div style="display:flex;flex-direction:column;gap:6px">' + elegidas.slice().sort((x, y) => x.dia - y.dia || x.desde - y.desde).map((fr) => '<div class="franja">' + DIAS_L[fr.dia].replace(/^./, (z) => z.toUpperCase()) + " " + hm(fr.desde) + "–" + hm(fr.hasta) + ' <span class="small muted" style="font-weight:500">' + esc(nomCons(fr.consultorioId)) + '</span><button type="button" class="btn ghost sm spacer" data-a="cf-quitar" data-v="' + elegidas.indexOf(fr) + '">Quitar</button></div>').join("") + "</div>" +
+      '<div class="sumario"><div><span class="small muted">Horas por semana</span><b>' + fmtH(horas) + '</b></div><div><span class="small muted">Cuota mensual</span><b>' + (precio ? money(precio) : "A definir") + '</b>' + (precio ? "" : '<span class="small muted">Falta cargar tarifas</span>') + "</div>"<div><span class="small muted">Plazo</span><b>' + nomPlazo(S.plazo) + '</b><span class="small muted">' + fCorta(S.inicio) + " al " + fCorta(fin) + "</span></div></div>" +
+      '<p class="small muted" style="margin:0">' + (ajuste ? "La cuota se ajusta " + ajuste + "% cada 3 meses (primer ajuste el " + fCorta(addMeses(S.inicio, 3)) + "). " : "") + "El primer mes se cobra proporcional a los días. Podés liberar un día puntual cuando no vengas; el horario queda reservado para vos todo el plazo.</p>" +
+      (pend ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido: el pedido queda esperando la aprobación del dueño.</div>" : "") +
+      '<div><button type="button" class="btn primary" data-a="cf-confirmar">' + (pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button></div>"
+      : '<div class="empty small">Todavía no sumaste horarios. Elegí día, duración y tocá una hora.</div>') +
+    "</div></section>";
+}
+function cardContrato(c, paraDueno) {
+  const h = hoy(), dias = Math.round((fromISO(c.fin) - fromISO(h)) / 864e5), px = proxAjuste(c, h), precio = precioContrato(c, h);
+  const pill = c.estado === "pendiente" ? '<span class="pill warn">Esperando aprobación</span>' : c.fin < h ? '<span class="pill neutral">Terminado</span>' : c.inicio > h ? '<span class="pill info">Empieza el ' + fCorta(c.inicio) + "</span>" : dias <= 30 ? '<span class="pill warn">Vence en ' + dias + " días</span>" : '<span class="pill good">Vigente</span>';
+  return '<div class="ct-card"><div class="ct-h"><b>' + (paraDueno ? esc(nomProf(c.profesionalId)) + " · " : "") + nomPlazo(c.plazo) + " · " + fmtH(horasFranjas(c.franjas)) + " por semana</b>" + pill + "</div>" +
+    '<span class="small">' + esc(textoFranjas(c.franjas)) + "</span>" +
+    '<span class="small muted">Del ' + fCorta(c.inicio) + "/" + c.inicio.slice(2, 4) + " al " + fCorta(c.fin) + "/" + c.fin.slice(2, 4) + " · cuota " + (precio ? money(precio) : "a definir") + (px ? " · sube " + c.ajustePct + "% el " + fCorta(px) : "") + "</span>" +
+    '<div class="tools" style="margin-top:4px">' +
+    (c.estado === "pendiente" && paraDueno ? '<button type="button" class="btn sm primary" data-a="ct-aprobar" data-id="' + c.id + '">Aprobar</button><button type="button" class="btn sm danger" data-a="ct-rechazar" data-id="' + c.id + '">Rechazar</button>' : "") +
+    (c.estado === "activo" && c.fin >= h && dias <= 45 ? '<button type="button" class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar ' + nomPlazo(c.plazo).toLowerCase() + "</button>" : "") +
+    (paraDueno && c.estado === "activo" && c.fin >= h ? '<button type="button" class="btn sm" data-a="ct-editar" data-id="' + c.id + '">Precio y ajuste</button><button type="button" class="btn sm" data-a="ct-terminar" data-id="' + c.id + '">Terminar antes</button>' : "") +
+    "</div></div>";
+}
+function secContratos() {
+  const h = hoy(), cs = lista("contratos").filter((c) => c.estado !== "cancelado").sort((a, b) => (a.estado === "pendiente" ? -1 : 0) - (b.estado === "pendiente" ? -1 : 0) || (a.fin < b.fin ? -1 : 1));
+  const vig = cs.filter((c) => c.estado === "activo" && c.fin >= h), hist = cs.filter((c) => c.fin < h);
+  const aseg = aseguradoMeses(mesDe(h), 6), hsCont = vig.filter((c) => c.inicio <= h).reduce((t, c) => t + horasFranjas(c.franjas), 0);
+  const dispSem = [0, 1, 2, 3, 4, 5, 6].filter((i) => (D.config.diasAbiertos || DEF_CONFIG.diasAbiertos)[i]).length * (cierraMin() - abreMin()) / 60 * consultoriosAct().length;
+  const maxA = Math.max(1, ...aseg.map((x) => x.total));
+  return '<div class="tools"><button type="button" class="btn primary" data-a="ct-nuevo">' + ICON.plus + "Nuevo contrato</button></div>" +
+    '<section class="kpis"><div class="kpi"><span class="kpi-l">Contratos vigentes</span><span class="kpi-v">' + vig.length + '</span><span class="kpi-s">' + cs.filter((c) => c.estado === "activo" && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).length + " vencen en 30 días</span></div>" +
+    '<div class="kpi"><span class="kpi-l">Horas contratadas por semana</span><span class="kpi-v">' + fmtH(hsCont) + '</span><div class="bar"><i style="width:' + Math.min(100, Math.round((hsCont / Math.max(1, dispSem)) * 100)) + '%"></i></div><span class="kpi-s">' + Math.round((hsCont / Math.max(1, dispSem)) * 100) + "% de " + fmtH(dispSem) + " disponibles</span></div>" +
+    '<div class="kpi"><span class="kpi-l">Asegurado próximos 6 meses</span><span class="kpi-v">' + money(aseg.reduce((t, x) => t + x.total, 0)) + '</span><span class="kpi-s">por contratos firmados</span></div></section>' +
+    '<section class="panel"><div class="panel-h"><h2>Ingresos asegurados por mes</h2></div><div class="panel-b"><div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end;height:120px">' + aseg.map((x) => '<div style="display:flex;flex-direction:column;justify-content:flex-end;height:100%;gap:4px"><span class="small num" style="text-align:center">' + (x.total ? "$" + Math.round(x.total / 1000) + "k" : "–") + '</span><i style="display:block;height:' + Math.max(2, Math.round((x.total / maxA) * 90)) + 'px;background:var(--accent);border-radius:4px 4px 0 0"></i></div>').join("") + '</div><div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:6px">' + aseg.map((x) => '<span class="small muted" style="text-align:center">' + MESES[Number(x.ym.slice(5)) - 1].slice(0, 3) + "</span>").join("") + "</div></div></section>" +
+    (cs.length - hist.length ? '<div style="display:flex;flex-direction:column;gap:10px">' + cs.filter((c) => c.fin >= h).map((c) => cardContrato(c, true)).join("") + "</div>" : '<div class="panel"><div class="empty"><b style="color:var(--fg)">Todavía no hay contratos</b><span class="small">Los profesionales pueden armar su horario fijo desde su app, o lo creás vos con "Nuevo contrato".</span></div></div>') +
+    (hist.length ? '<details class="panel"><summary class="panel-h" style="cursor:pointer"><h2>Terminados (' + hist.length + ")</h2></summary><div class=\"panel-b\" style=\"display:flex;flex-direction:column;gap:10px\">" + hist.map((c) => cardContrato(c, true)).join("") + "</div></details>" : "");
+}
+function modalContratoNuevo(m) {
+  const pa = profesionalesAct(); if (!m.pid && pa[0]) m.pid = pa[0].id;
+  return mHead("Nuevo contrato") + '<div class="modal-b">' + '<div class="field"><label for="ct-prof">Profesional</label><select class="sel" id="ct-prof" data-change="ct-prof">' + pa.map((p) => '<option value="' + p.id + '"' + (p.id === m.pid ? " selected" : "") + ">" + esc(p.nombre) + "</option>").join("") + "</select></div>" + (m.pid ? armadorHTML(m.pid, true) : "") + "</div>";
+}
+function modalContratoEditar(m) {
+  const c = D.contratos[m.id]; if (!c) return mHead("Contrato") + '<div class="modal-b">Ya no existe.</div>';
+  return mHead("Precio y ajuste") + '<form data-form="ct-editar"><div class="modal-b"><p class="small muted" style="margin:0">' + esc(nomProf(c.profesionalId)) + " · " + esc(textoFranjas(c.franjas)) + "</p>" +
+    '<div class="grid2"><div class="field"><label for="ce-p">Cuota base (al inicio)</label><input class="inp" id="ce-p" name="precio" type="number" min="0" step="100" value="' + esc(c.precio) + '"></div><div class="field"><label for="ce-a">Ajuste cada 3 meses (%)</label><input class="inp" id="ce-a" name="ajustePct" type="number" min="0" step="0.5" value="' + esc(c.ajustePct || 0) + '"></div></div>' +
+    '<p class="small muted" style="margin:0">Hoy paga ' + money(precioContrato(c, hoy())) + ". Los meses ya generados no cambian.</p>" +
+    '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form>';
+}
+function modalContratoTerminar(m) {
+  const c = D.contratos[m.id]; if (!c) return mHead("Contrato") + '<div class="modal-b">Ya no existe.</div>';
+  return mHead("Terminar contrato antes") + '<form data-form="ct-terminar"><div class="modal-b"><p style="margin:0">' + esc(nomProf(c.profesionalId)) + " · " + esc(textoFranjas(c.franjas)) + '</p><div class="field"><label for="ct-f">Último día</label><input class="inp" type="date" id="ct-f" name="fecha" min="' + hoy() + '" max="' + c.fin + '" value="' + hoy() + '" required></div><p class="small muted" style="margin:0">Desde el día siguiente esos horarios quedan libres y el mes se cobra proporcional.</p></div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Volver</button><button type="submit" class="btn danger">Terminar</button></div></form>';
+}
+function pvHorario(p) {
+  const cs = contratosDe(p.id).filter((c) => c.fin >= hoy());
+  return "<h1>Mi horario fijo</h1>" +
+    (cs.length ? '<div style="display:flex;flex-direction:column;gap:10px">' + cs.map((c) => cardContrato(c, false)).join("") + "</div>" : '<p class="muted" style="margin:0">Asegurate tu consultorio los mismos días y horarios todas las semanas. Tus pacientes siempre te encuentran en el mismo lugar y pagás una cuota fija por mes.</p>') +
+    "<h2 style=\"margin:8px 0 0\">" + (cs.length ? "Sumar otro horario fijo" : "Armá tu horario fijo") + "</h2>" + armadorHTML(p.id, false);
 }
 
 /* ---- Bienvenida ---- */
@@ -810,6 +980,11 @@ function vistaInicio() {
       else atencion.push('<div class="row"><span class="pill warn">Problema</span><div class="row-main"><span class="row-title">' + esc(a.texto) + '</span><span class="small muted">' + esc(nomProf(a.profesionalId)) + (a.consultorioId ? " · " + esc(nomCons(a.consultorioId)) : "") + " · " + fCorta(String(a.creado).slice(0, 10)) + '</span></div><button class="btn sm" data-a="aviso-descartar" data-id="' + a.id + '">Listo</button><button class="btn sm primary" data-a="aviso-tarea" data-id="' + a.id + '">Pasar a mantenimiento</button></div>');
     });
   }
+  if (esActual) {
+    lista("contratos").filter((c) => c.estado === "pendiente").forEach((c) => atencion.push('<div class="row"><span class="pill warn">Horario fijo pedido</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + " · debe " + money(cuenta(c.profesionalId).vencido) + '</span></div><button class="btn sm" data-a="ct-rechazar" data-id="' + c.id + '">Rechazar</button><button class="btn sm primary" data-a="ct-aprobar" data-id="' + c.id + '">Aprobar</button></div>'));
+    lista("contratos").filter((c) => c.estado === "activo" && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).sort((a, b) => (a.fin < b.fin ? -1 : 1)).forEach((c) => atencion.push('<div class="row"><span class="pill warn">Vence ' + fCorta(c.fin) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + '</span></div><button class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar</button></div>'));
+    lista("contratos").filter((c) => c.estado === "activo").map((c) => ({ c, f: proxAjuste(c, h) })).filter((x) => x.f && (fromISO(x.f) - fromISO(h)) / 864e5 <= 15).forEach((x) => atencion.push('<div class="row"><span class="pill info">Aumento ' + fCorta(x.f) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(x.c.profesionalId)) + " · +" + x.c.ajustePct + '%</span><span class="small muted">' + money(precioContrato(x.c, h)) + " → " + money(precioContrato(x.c, x.f)) + " por mes · se aplica solo</span></div></div>"));
+  }
   if (generados.length && !esFuturo) atencion.push('<div class="row"><span class="pill info">Cargos</span><div class="row-main"><span class="row-title">Faltan generar ' + generados.length + " cargos de " + mesN + '</span><span class="small muted">' + money(generados.reduce((t, c) => t + c.importe, 0)) + ' entre alquileres mensuales y horarios fijos</span></div><button class="btn sm primary" data-a="ir-cobros" data-v="' + ym + '">Revisar</button></div>');
   vencidos.forEach((x) => atencion.push('<div class="row"><span class="pill bad">Deuda</span><div class="row-main"><span class="row-title">' + esc(x.p.nombre) + '</span><span class="small muted">' + money(x.c.vencido) + " vencido desde el " + fCorta(x.c.masViejo) + (esActual ? "" : " (al " + fCorta(corte) + ")") + '</span></div><button class="btn sm" data-a="ver-prof" data-id="' + x.p.id + '">Ver cuenta</button></div>'));
   if (esActual) tareasProx.forEach((t) => atencion.push('<div class="row"><span class="pill ' + (t.proxima < h ? "bad" : "warn") + '">Mantenimiento</span><div class="row-main"><span class="row-title">' + esc(t.titulo) + '</span><span class="small muted">' + (t.consultorioId ? esc(nomCons(t.consultorioId)) + " · " : "") + (t.proxima < h ? "vencida el " : "para el ") + fCorta(t.proxima) + '</span></div><button class="btn sm" data-a="tarea-hecha" data-id="' + t.id + '">Hecha</button></div>'));
@@ -836,6 +1011,7 @@ function vistaInicio() {
 
   return '<div class="head"><div class="head-l"><span class="eyebrow">' + (esActual ? esc(fLarga(h).replace(/^./, (c) => c.toUpperCase())) : esFuturo ? "Mes próximo: lo reservado hasta hoy" : "Mes cerrado") + "</span><h1>" + esc(D.config.nombre || "Inicio") + "</h1></div>" + periodo + "</div>" +
   '<section class="kpis" aria-label="Resumen del mes">' +
+  (() => { const a3 = aseguradoMeses(addMonths(mesDe(h), 1), 3), t = a3.reduce((x, y) => x + y.total, 0); return t || lista("contratos").length ? '<div class="kpi"><span class="kpi-l">Asegurado próximos 3 meses</span><span class="kpi-v">' + money(t) + '</span><span class="kpi-s">por contratos de horario fijo</span><button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="ir-contratos">Ver contratos</button></div>' : ""; })() +
   '<div class="kpi"><span class="kpi-l">Ocupación de ' + mesN + '</span><span class="kpi-v">' + mesPct + '%</span><div class="bar"><i style="width:' + mesPct + '%"></i></div><span class="kpi-s num">' + fmtH(mesH) + " de " + fmtH(mesD) + " disponibles</span></div>" +
   '<div class="kpi"><span class="kpi-l">Cobrado en ' + mesN + '</span><span class="kpi-v">' + money(cobrado) + '</span><div class="bar"><i style="width:' + pctCobro + '%;background:var(--good)"></i></div><span class="kpi-s">de ' + money(facturado) + " facturado en el mes</span></div>" +
   '<div class="kpi"><span class="kpi-l">Gastos de ' + mesN + '</span><span class="kpi-v">' + money(gastosMes) + '</span><button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="ver-gastos-mes" data-v="' + ym + '">Ver detalle</button></div>' +
@@ -974,10 +1150,10 @@ function movRow(m, conNombre) {
 
 /* ---- Más ---- */
 function vistaMas() {
-  const secs = [["socios", "Socios y ganancias"], ["tarifas", "Tarifas"], ["gastos", "Gastos"], ["mantenimiento", "Mantenimiento"], ["consultorios", "Consultorios"], ["ajustes", "Ajustes y respaldo"]];
+  const secs = [["contratos", "Contratos"], ["socios", "Socios y ganancias"], ["tarifas", "Tarifas"], ["gastos", "Gastos"], ["mantenimiento", "Mantenimiento"], ["consultorios", "Consultorios"], ["ajustes", "Ajustes y respaldo"]];
   const tabs = '<div class="chips" role="group" aria-label="Secciones">' + secs.map(([k, l]) => '<button type="button" class="chip-btn" data-a="mas-sec" data-v="' + k + '" aria-pressed="' + (UI.seccionMas === k) + '">' + l + "</button>").join("") + "</div>";
   const s = UI.seccionMas;
-  const body = s === "socios" ? secSocios() : s === "tarifas" ? secTarifas() : s === "gastos" ? secGastos() : s === "mantenimiento" ? secTareas() : s === "consultorios" ? secConsultorios() : secAjustes();
+  const body = s === "contratos" ? secContratos() : s === "socios" ? secSocios() : s === "tarifas" ? secTarifas() : s === "gastos" ? secGastos() : s === "mantenimiento" ? secTareas() : s === "consultorios" ? secConsultorios() : secAjustes();
   return '<div class="head"><div class="head-l"><h1>' + esc(secs.find((x) => x[0] === s)[1]) + "</h1></div></div>" + tabs + body;
 }
 function secGastos() {
@@ -1023,13 +1199,15 @@ function secSocios() {
 function secTarifas() {
   if (!UI.tarifasDraft) UI.tarifasDraft = JSON.parse(JSON.stringify(tarifario()));
   const T = UI.tarifasDraft, real = tarifario();
-  const cambio = JSON.stringify({ h: T.hora, m: T.modulos }) !== JSON.stringify({ h: real.hora, m: real.modulos });
+  const cambio = JSON.stringify({ h: T.hora, m: T.modulos, r: T.recargoSuelta, a: T.anticipacionSuelta, j: T.ajustePct }) !== JSON.stringify({ h: real.hora, m: real.modulos, r: real.recargoSuelta, a: real.anticipacionSuelta, j: real.ajustePct });
   const conMod = profesionalesAct().filter((p) => p.modalidad === "mensual" && p.planTipo === "modulos");
   const especiales = profesionalesAct().filter((p) => p.modalidad === "mensual" && p.planTipo !== "modulos");
   const nuevoPrecio = (p) => { let t = 0; T.modulos.forEach((m) => (t += Number((p.plan || {})[m.id] || 0) * Number(m.precio || 0))); return t; };
   return '<form class="panel" data-form="tarifas"><div class="panel-h"><div><h2>Tarifario</h2><span class="small muted">Los precios que se usan al cargar profesionales y reservas. Cada consultorio puede tener su propio precio por hora en Consultorios.</span></div>' + (cambio ? '<span class="pill warn">Cambios sin guardar</span>' : "") + "</div>" +
     '<div class="panel-b" style="display:flex;flex-direction:column;gap:16px">' +
-    '<div class="field" style="max-width:320px"><label for="tf-hora">Hora suelta</label><input class="inp" id="tf-hora" name="hora" type="number" min="0" step="100" value="' + esc(T.hora || "") + '" data-change="tf-campo"><span class="small muted">Reservas sueltas y horas extra</span></div>' +
+    '<div class="field" style="max-width:320px"><label for="tf-hora">Hora suelta</label><input class="inp" id="tf-hora" name="hora" type="number" min="0" step="100" value="' + esc(T.hora || "") + '" data-change="tf-campo"><span class="small muted">Base para horas extra y para completar módulos</span></div>' +
+    '<div class="grid2" style="max-width:720px"><div class="field"><label for="tf-rec">Recargo de la hora suelta (%)</label><input class="inp" id="tf-rec" name="recargoSuelta" type="number" min="0" step="1" value="' + esc(T.recargoSuelta) + '" data-change="tf-campo"><span class="small muted">Desde la app del profesional: ' + money(Math.round((Number(T.hora) || 0) * (1 + (Number(T.recargoSuelta) || 0) / 100))) + ' la hora</span></div><div class="field"><label for="tf-ant">Hora suelta: cuántos días antes se puede reservar</label><input class="inp" id="tf-ant" name="anticipacionSuelta" type="number" min="1" max="60" value="' + esc(T.anticipacionSuelta) + '" data-change="tf-campo"></div></div>' +
+    '<div class="field" style="max-width:320px"><label for="tf-aj">Ajuste de contratos nuevos cada 3 meses (%)</label><input class="inp" id="tf-aj" name="ajustePct" type="number" min="0" step="0.5" value="' + esc(T.ajustePct) + '" data-change="tf-campo"><span class="small muted">Cada contrato guarda el suyo; lo cambiás en Contratos.</span></div>' +
     '<div><span class="lbl">Módulos mensuales</span><div class="table-wrap" style="margin-top:6px"><table class="t" style="min-width:560px"><thead><tr><th>Nombre</th><th class="r">Horas por semana</th><th class="r">Precio por mes</th><th class="r">Equivale a</th><th></th></tr></thead><tbody>' +
     (T.modulos.length ? T.modulos.map((m) => '<tr data-mod="' + esc(m.id) + '"><td><input class="inp" name="nombre__' + esc(m.id) + '" value="' + esc(m.nombre) + '" data-change="tf-campo" aria-label="Nombre del módulo"></td><td class="r"><input class="inp num" style="width:110px;text-align:right" type="number" min="0" step="0.5" name="horas__' + esc(m.id) + '" value="' + esc(m.horas) + '" data-change="tf-campo" aria-label="Horas por semana"></td><td class="r"><input class="inp num" style="width:150px;text-align:right" type="number" min="0" step="100" name="precio__' + esc(m.id) + '" value="' + esc(m.precio) + '" data-change="tf-campo" aria-label="Precio por mes"></td><td class="r small muted tf-ph">' + (m.horas ? money(m.precio / (m.horas * 4.33)) + "/h" : "—") + '</td><td><button type="button" class="icon-btn" data-a="tf-quitar" data-id="' + esc(m.id) + '" aria-label="Quitar módulo">' + ICON.close + "</button></td></tr>").join("")
       : '<tr><td colspan="5" class="muted">Sin módulos. Agregá los que ofrecés (por ejemplo 4, 8 o 12 horas semanales).</td></tr>') +
@@ -1064,7 +1242,7 @@ function abrirModal(m) { UI.modal = m; renderModal(); }
 function cerrarModal() { UI.modal = null; $("#modalRoot").innerHTML = ""; }
 function renderModal() {
   const m = UI.modal; if (!m) { $("#modalRoot").innerHTML = ""; return; }
-  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
+  const html = ({ reserva: modalReserva, item: modalItem, prof: modalProf, profForm: modalProfForm, pago: modalPago, cargo: modalCargo, gasto: modalGasto, tarea: modalTarea, pvItem: modalPvItem, ctNuevo: modalContratoNuevo, ctEditar: modalContratoEditar, ctTerminar: modalContratoTerminar, pvConfirm: modalPvConfirm, pvPago: modalPvPago, consDatos: modalConsDatos, socio: modalSocio, socmov: modalSocmov, cons: modalCons, generar: modalGenerar, texto: modalTexto }[m.t])(m);
   $("#modalRoot").innerHTML = '<div class="scrim" data-a="scrim"><div class="modal' + (m.wide ? " wide" : "") + '" role="dialog" aria-modal="true" aria-labelledby="mt">' + html + "</div></div>";
   const first = $("#modalRoot [autofocus]") || $("#modalRoot input, #modalRoot select"); if (first && window.innerWidth > 700) first.focus();
 }
@@ -1399,6 +1577,33 @@ document.addEventListener("click", async (e) => {
     case "pv-entrar": UI.modo = "prof"; UI.profVista = id; UI.pvTab = "inicio"; UI.pvFecha = hoy(); UI.pvDesde = null; cerrarModal(); render(); window.scrollTo(0, 0); break;
     case "pv-salir": UI.modo = "dueno"; cerrarModal(); render(); window.scrollTo(0, 0); break;
     case "pv-tab": UI.pvTab = v; cerrarModal(); render(); window.scrollTo(0, 0); break;
+    case "ir-contratos": UI.tab = "mas"; UI.seccionMas = "contratos"; render(); window.scrollTo(0, 0); break;
+    case "cf-plazo": cfEstado(UI.cf.pid).plazo = Number(v); UI.cf.franjas = UI.cf.franjas.filter((fr) => franjaLibre(fr, UI.cf.inicio, finContrato(UI.cf.inicio, UI.cf.plazo), UI.cf.pid).ok); UI.modal ? renderModal() : render(); break;
+    case "cf-dia": UI.cf.dia = Number(v); UI.modal ? renderModal() : render(); break;
+    case "cf-dur": UI.cf.dur = Number(v); UI.modal ? renderModal() : render(); break;
+    case "cf-add": UI.cf.franjas.push({ consultorioId: el.dataset.cons, dia: UI.cf.dia, desde: Number(v), hasta: Number(v) + UI.cf.dur }); UI.modal ? renderModal() : render(); toast("Sumado: " + DIAS_L[UI.cf.dia] + " " + hm(Number(v)) + "–" + hm(Number(v) + UI.cf.dur)); break;
+    case "cf-quitar": UI.cf.franjas.splice(Number(v), 1); UI.modal ? renderModal() : render(); break;
+    case "cf-confirmar": {
+      const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio, S.plazo);
+      if (!S.franjas.length) break;
+      const malo = S.franjas.find((fr) => !franjaLibre(fr, S.inicio, fin, S.pid).ok);
+      if (malo) { toast("Uno de los horarios se acaba de ocupar. Revisalo."); S.franjas = S.franjas.filter((fr) => fr !== malo); paraDueno ? renderModal() : render(); break; }
+      const pend = !paraDueno && cuenta(S.pid).vencido > 0;
+      await crearContrato({ profesionalId: S.pid, franjas: S.franjas, plazo: S.plazo, inicio: S.inicio, estado: pend ? "pendiente" : "activo", origen: paraDueno ? "dueno" : "portal" });
+      UI.cf = null;
+      if (paraDueno) { cerrarModal(); UI.tab = "mas"; UI.seccionMas = "contratos"; } else UI.pvTab = "inicio";
+      render(); window.scrollTo(0, 0); toast(pend ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
+    }
+    case "ct-nuevo": UI.cf = null; abrirModal({ t: "ctNuevo", wide: true }); break;
+    case "ct-editar": abrirModal({ t: "ctEditar", id }); break;
+    case "ct-terminar": abrirModal({ t: "ctTerminar", id }); break;
+    case "ct-aprobar": { const c = D.contratos[id]; if (!c) break; await put("contratos", id, { ...c, estado: "activo", aprobado: hoy() }); await setSeriesContrato(c, { estado: null }); toast("Contrato aprobado"); break; }
+    case "ct-rechazar": { const c = D.contratos[id]; if (!c) break; for (const sx of lista("series").filter((x) => x.contratoId === id)) await del("series", sx.id); await put("contratos", id, { ...c, estado: "cancelado", rechazado: hoy() }); toast("Pedido rechazado: los horarios quedan libres"); break; }
+    case "ct-renovar": {
+      const c = D.contratos[id]; if (!c) break;
+      const r = await renovarContrato(c);
+      toast(r.ok ? "Renovado hasta el " + fCorta(r.fin) + "/" + r.fin.slice(2, 4) : "No se puede renovar: el " + fCorta(r.f) + " ese horario ya está tomado"); break;
+    }
     case "pv-dia": UI.pvFecha = el.dataset.fecha; render(); break;
     case "pv-dur": UI.pvDur = Number(v); render(); break;
     case "pv-desde": UI.pvDesde = Number(v); render(); break;
@@ -1413,7 +1618,7 @@ document.addEventListener("click", async (e) => {
       const m = UI.modal, p = prof(UI.profVista);
       const fechas = semanasRep(m, Number(m.rep || 1)).filter((x) => x.ok).map((x) => x.f);
       if (!fechas.length) { cerrarModal(); toast("Ese horario se acaba de ocupar. Elegí otro."); render(); break; }
-      const pend = cuenta(p.id).vencido > 0, importe = Math.round(precioHora(p.id, m.cons) * (m.hasta - m.desde) / 60);
+      const pend = cuenta(p.id).vencido > 0, importe = Math.round(precioSuelta(p.id, m.cons) * (m.hasta - m.desde) / 60);
       for (const f of fechas) {
         const oid = uid();
         await put("ocupaciones", oid, { consultorioId: m.cons, profesionalId: p.id, tipo: "reserva", fecha: f, desde: m.desde, hasta: m.hasta, estado: pend ? "pendiente" : "confirmada", importe, nota: "", origen: "portal", creado: new Date().toISOString() });
@@ -1550,6 +1755,8 @@ document.addEventListener("change", (e) => {
   if (k === "pago-prof") { UI.modal.id = el.value; renderModal(); return; }
   if (k === "pv-prof") { UI.profVista = el.value; UI.pvDesde = null; render(); return; }
   if (k === "pv-desde") { UI.pvDesde = Number(el.value); render(); return; }
+  if (k === "cf-ini") { if (el.value && el.value >= hoy()) { UI.cf.inicio = el.value; UI.cf.franjas = UI.cf.franjas.filter((fr) => franjaLibre(fr, UI.cf.inicio, finContrato(UI.cf.inicio, UI.cf.plazo), UI.cf.pid).ok); } UI.modal ? renderModal() : render(); return; }
+  if (k === "ct-prof") { UI.modal.pid = el.value; UI.cf = null; renderModal(); return; }
   if (k === "pv-rep") { if (UI.modal) { UI.modal.rep = Number(el.value); renderModal(); } return; }
   if (k === "prof-calc") {
     const f = el.closest("form"); if (!f) return;
@@ -1564,7 +1771,7 @@ document.addEventListener("change", (e) => {
   }
   if (k === "tf-campo") {
     const T = UI.tarifasDraft; if (!T) return;
-    if (el.name === "hora") T.hora = Number(el.value) || 0;
+    if (["hora", "recargoSuelta", "anticipacionSuelta", "ajustePct"].includes(el.name)) T[el.name] = Number(el.value) || 0;
     else { const [campo, mid] = el.name.split("__"); const mod = T.modulos.find((x) => x.id === mid); if (mod) mod[campo] = campo === "nombre" ? el.value : Number(el.value) || 0; }
     const row = el.closest("[data-mod]");
     if (row) { const mod = T.modulos.find((x) => x.id === row.dataset.mod); const ph = row.querySelector(".tf-ph"); if (mod && ph) ph.textContent = mod.horas ? money(mod.precio / (mod.horas * 4.33)) + "/h" : "—"; }
@@ -1632,6 +1839,15 @@ document.addEventListener("submit", async (e) => {
       else if (D.socmov["gp-" + gid]) await del("socmov", "gp-" + gid);
       UI.mesGastos = mesDe(g("fecha") || hoy()); cerrarModal(); toast("Gasto guardado"); break;
     }
+    case "ct-editar": {
+      const c = D.contratos[UI.modal.id]; if (!c) return;
+      await put("contratos", c.id, { ...c, precio: Number(g("precio")) || 0, ajustePct: Number(g("ajustePct")) || 0 });
+      cerrarModal(); toast("Contrato actualizado"); break;
+    }
+    case "ct-terminar": {
+      const c = D.contratos[UI.modal.id]; if (!c || !g("fecha")) return;
+      await terminarContrato(c, g("fecha")); cerrarModal(); toast("Contrato terminado: horarios libres desde el " + fCorta(addDays(g("fecha"), 1))); break;
+    }
     case "pv-pago": {
       const imp = Number(g("importe")); if (!(imp > 0)) return;
       await put("avisos", uid(), { tipo: "pago", profesionalId: UI.profVista, importe: imp, fecha: g("fecha") || hoy(), medio: g("medio"), nota: g("nota"), estado: "pendiente", creado: new Date().toISOString() });
@@ -1668,10 +1884,13 @@ document.addEventListener("submit", async (e) => {
       if (T.modulos.some((m) => !String(m.nombre).trim() || !(Number(m.horas) > 0) || !(Number(m.precio) > 0))) { toast("Completá nombre, horas y precio de cada módulo."); break; }
       const partes = [];
       if (Number(T.hora) !== Number(viejo.hora)) partes.push("hora " + money(viejo.hora) + " → " + money(T.hora));
+      if (Number(T.recargoSuelta) !== Number(viejo.recargoSuelta)) partes.push("recargo suelta " + viejo.recargoSuelta + "% → " + T.recargoSuelta + "%");
+      if (Number(T.anticipacionSuelta) !== Number(viejo.anticipacionSuelta)) partes.push("anticipación suelta " + viejo.anticipacionSuelta + " → " + T.anticipacionSuelta + " días");
+      if (Number(T.ajustePct) !== Number(viejo.ajustePct)) partes.push("ajuste contratos " + viejo.ajustePct + "% → " + T.ajustePct + "%");
       T.modulos.forEach((m) => { const v = viejo.modulos.find((x) => x.id === m.id); if (!v) partes.push("nuevo " + m.nombre + " " + money(m.precio)); else if (Number(v.precio) !== Number(m.precio) || v.nombre !== m.nombre || Number(v.horas) !== Number(m.horas)) partes.push(m.nombre + " " + money(v.precio) + " → " + money(m.precio)); });
       viejo.modulos.forEach((v) => { if (!T.modulos.find((m) => m.id === v.id)) partes.push("quitado " + v.nombre); });
       const historial = (viejo.historial || []).concat(partes.length ? [{ fecha: hoy(), detalle: (T._aumento ? "Aumento " + T._aumento + "%: " : "") + partes.join(" · ") }] : []).slice(-40);
-      await putConfig({ tarifario: { hora: Number(T.hora) || 0, modulos: T.modulos.map((m) => ({ id: m.id, nombre: String(m.nombre).trim(), horas: Number(m.horas), precio: Number(m.precio) })), historial } });
+      await putConfig({ tarifario: { hora: Number(T.hora) || 0, recargoSuelta: Number(T.recargoSuelta) || 0, anticipacionSuelta: Number(T.anticipacionSuelta) || 14, ajustePct: Number(T.ajustePct) || 0, modulos: T.modulos.map((m) => ({ id: m.id, nombre: String(m.nombre).trim(), horas: Number(m.horas), precio: Number(m.precio) })), historial } });
       let n = 0;
       for (const p of profesionalesAct().filter((x) => x.modalidad === "mensual" && x.planTipo === "modulos")) { const t = totalPlan(p.plan); if (t.precio !== Number(p.precioMensual) || t.horas !== Number(p.horasPlan)) { n++; await put("profesionales", p.id, { ...p, precioMensual: t.precio, horasPlan: t.horas }); } }
       UI.tarifasDraft = null; render();

@@ -282,5 +282,25 @@ rep("""    case "salir": await SB.auth.signOut(); location.reload(); break;""", 
       el.disabled = false;
       toast(error ? "No se pudo mandar: " + error.message : "Listo: le mandamos un mail a " + String(p.email).trim() + " para entrar (que revise spam)"); break;
     }""")
+# ---------- contratos desde la app del profesional: los valida la base ----------
+rep("""      const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio, S.plazo);
+      if (!S.franjas.length) break;""", """      const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio, S.plazo);
+      if (!S.franjas.length) break;
+      if (ROL === "profesional") {
+        el.disabled = true;
+        const { data, error } = await SB.rpc("pv_contratar", { p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo });
+        el.disabled = false;
+        if (error) { await cargarAgenda(); render(); toast(error.message || "No se pudo confirmar."); break; }
+        UI.cf = null; await cargarTodo(); UI.pvTab = "inicio"; render(); window.scrollTo(0, 0);
+        toast(data.estado === "pendiente" ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
+      }""")
+rep("""      const c = D.contratos[id]; if (!c) break;
+      const r = await renovarContrato(c);""", """      const c = D.contratos[id]; if (!c) break;
+      if (ROL === "profesional") {
+        const { data, error } = await SB.rpc("pv_renovar", { p_id: id });
+        if (error) { toast(error.message || "No se pudo renovar."); break; }
+        await cargarTodo(); render(); toast("Renovado hasta el " + fCorta(data.fin) + "/" + data.fin.slice(2, 4)); break;
+      }
+      const r = await renovarContrato(c);""")
 open('index.html', 'w', encoding='utf-8').write(s)
 print('index.html', len(s))
