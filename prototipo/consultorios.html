@@ -175,6 +175,14 @@ table.t .r { text-align: right; font-variant-numeric: tabular-nums; }
 .slotbar { position: relative; height: 24px; border-radius: 6px; background: color-mix(in srgb, var(--good) 24%, var(--surface)); overflow: hidden; }
 .slotbar i { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--faint) 45%, var(--surface)); }
 .slotbar em { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 5px; }
+.slots { display: flex; flex-wrap: wrap; gap: 6px; }
+.slot { min-width: 64px; min-height: 40px; padding: 0 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--good) 45%, var(--line)); background: color-mix(in srgb, var(--good) 12%, var(--surface)); color: var(--fg); font-weight: 700; font-variant-numeric: tabular-nums; }
+.slot:hover { border-color: var(--good); }
+.pv-step { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: .95rem; }
+.pv-step b { width: 24px; height: 24px; border-radius: 50%; background: var(--fg); color: var(--bg); display: inline-grid; place-items: center; font-size: .78rem; }
+.rep-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.rep-list span { font-size: .78rem; padding: 3px 8px; border-radius: 8px; background: var(--good-soft, color-mix(in srgb, var(--good) 14%, var(--surface))); }
+.rep-list span.no { background: color-mix(in srgb, var(--bad) 14%, var(--surface)); text-decoration: line-through; }
 .slot-scale { display: flex; justify-content: space-between; font-size: .7rem; color: var(--faint); font-variant-numeric: tabular-nums; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .78rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -671,36 +679,27 @@ function pvInicio(p) {
 }
 function pvReservar(p) {
   const h = hoy(), a = abreMin(), cz = cierraMin(), dur = UI.pvDur || 60;
-  let f = UI.pvFecha && UI.pvFecha >= h ? UI.pvFecha : h;
+  const f = UI.pvFecha && UI.pvFecha >= h ? UI.pvFecha : h;
   const chips = [];
-  for (let i = 0; i < 21; i++) { const d = addDays(h, i), ab = abierto(d); chips.push('<button type="button" class="daychip" data-a="pv-dia" data-fecha="' + d + '" aria-pressed="' + (d === f) + '"' + (ab ? "" : " disabled") + "><small>" + (i === 0 ? "Hoy" : DIAS[wd(d)]) + "</small>" + fromISO(d).getDate() + "</button>"); }
-  if (!abierto(f)) return "<h1>Reservar</h1>" + '<div class="daychips" role="group" aria-label="Día">' + chips.join("") + '</div><div class="panel"><div class="empty">Ese día el lugar está cerrado. Elegí otro día.</div></div>';
+  for (let i = 0; i < 35; i++) { const d = addDays(h, i), ab = abierto(d); chips.push('<button type="button" class="daychip" data-a="pv-dia" data-fecha="' + d + '" aria-pressed="' + (d === f) + '"' + (ab ? "" : " disabled") + "><small>" + (i === 0 ? "Hoy" : DIAS[wd(d)]) + "</small>" + fromISO(d).getDate() + "</button>"); }
+  const durs = [[60, "1 h"], [90, "1½ h"], [120, "2 h"], [180, "3 h"], [240, "4 h"], [360, "6 h"]];
+  const c = cuenta(p.id);
+  let html = "<h1>Reservar</h1>" +
+    '<div class="pv-step"><b>1</b>Elegí el día</div><div class="daychips" role="group" aria-label="Día">' + chips.join("") + "</div>" +
+    '<div class="pv-step"><b>2</b>¿Cuánto tiempo?</div><div class="seg" role="group" aria-label="Duración" style="flex-wrap:wrap">' + durs.map(([m, l]) => '<button type="button" data-a="pv-dur" data-v="' + m + '" aria-pressed="' + (dur === m) + '">' + l + "</button>").join("") + "</div>" +
+    (c.vencido > 0 ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido. Tus reservas quedan esperando la aprobación del dueño hasta que regularices.</div>" : "");
+  if (!abierto(f)) return html + '<div class="panel"><div class="empty">Ese día el lugar está cerrado. Elegí otro día.</div></div>';
   const minIni = f === h ? Math.ceil(ahoraMin() / 30) * 30 : a;
-  const inicios = []; for (let m = Math.max(a, minIni); m + dur <= cz; m += 30) inicios.push(m);
-  const cs = consultoriosAct();
-  if (!inicios.length) return "<h1>Reservar</h1>" + '<div class="daychips" role="group" aria-label="Día">' + chips.join("") + '</div><div class="panel"><div class="empty">No quedan horarios para hoy. Elegí otro día.</div></div>';
-  let desde = UI.pvDesde;
-  if (inicios.indexOf(desde) === -1) desde = inicios.find((m) => cs.some((k) => libreEn(f, k.id, m, m + dur))) || inicios[0];
-  const hasta = desde + dur;
-  const choquePropio = itemsProf(f, p.id).find((x) => solapa(desde, hasta, x.desde, x.hasta));
-  const c = cuenta(p.id), precio = Math.round(precioHora(p.id, null) * dur / 60);
-  const span = cz - a;
-  const filas = cs.map((k) => {
-    const its = itemsDelDia(f).filter((x) => x.consultorioId === k.id);
-    const segs = its.map((x) => '<i style="left:' + (((x.desde - a) / span) * 100).toFixed(2) + "%;width:" + (((x.hasta - x.desde) / span) * 100).toFixed(2) + '%"></i>').join("");
-    const sel = '<em style="left:' + (((desde - a) / span) * 100).toFixed(2) + "%;width:" + ((dur / span) * 100).toFixed(2) + '%"></em>';
-    const libre = libreEn(f, k.id, desde, hasta);
-    let alt = "";
-    if (!libre) { const otro = inicios.filter((m) => libreEn(f, k.id, m, m + dur)).sort((x, y) => Math.abs(x - desde) - Math.abs(y - desde))[0]; alt = otro != null ? '<button type="button" class="btn ghost sm" style="padding:0" data-a="pv-desde" data-v="' + otro + '">Libre a las ' + hm(otro) + "</button>" : '<span class="small muted">Sin lugar ese día</span>'; }
-    return '<div class="row" style="flex-wrap:wrap"><div style="flex:1 1 220px;min-width:0;display:flex;flex-direction:column;gap:6px"><span class="row-title">' + esc(k.nombre) + '</span><div class="slotbar" aria-hidden="true">' + segs + sel + "</div></div>" +
-      (libre ? '<button type="button" class="btn sm primary" data-a="pv-reservar" data-cons="' + k.id + '"' + (choquePropio ? " disabled" : "") + ">Reservar " + hm(desde) + "–" + hm(hasta) + "</button>" : '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px"><span class="pill neutral">Ocupado</span>' + alt + "</div>") + "</div>";
+  const precio = Math.round(precioHora(p.id, null) * dur / 60);
+  const mios = itemsProf(f, p.id);
+  const filas = consultoriosAct().map((k) => {
+    const libres = [];
+    for (let m = Math.max(a, minIni); m + dur <= cz; m += 30) if (libreEn(f, k.id, m, m + dur) && !mios.some((x) => solapa(m, m + dur, x.desde, x.hasta))) libres.push(m);
+    return '<div class="row" style="flex-direction:column;align-items:stretch;gap:8px"><span class="row-title">' + esc(k.nombre) + "</span>" +
+      (libres.length ? '<div class="slots">' + libres.map((m) => '<button type="button" class="slot" data-a="pv-slot" data-cons="' + k.id + '" data-v="' + m + '" aria-label="Reservar ' + esc(k.nombre) + " de " + hm(m) + " a " + hm(m + dur) + '">' + hm(m) + "</button>").join("") + "</div>" : '<span class="small muted">No hay ' + fmtH(dur / 60) + " seguidas libres este día.</span>") + "</div>";
   }).join("");
-  return "<h1>Reservar</h1>" +
-    '<div class="daychips" role="group" aria-label="Día">' + chips.join("") + "</div>" +
-    '<div class="tools"><div class="field" style="width:150px"><label for="pv-desde">Desde</label><select class="sel" id="pv-desde" data-change="pv-desde">' + inicios.map((m) => '<option value="' + m + '"' + (m === desde ? " selected" : "") + ">" + hm(m) + "</option>").join("") + '</select></div><div class="field"><span class="lbl">Duración</span><div class="seg" role="group" aria-label="Duración">' + [[60, "1 h"], [90, "1½ h"], [120, "2 h"], [180, "3 h"], [240, "4 h"]].map(([m, l]) => '<button type="button" data-a="pv-dur" data-v="' + m + '" aria-pressed="' + (dur === m) + '">' + l + "</button>").join("") + "</div></div></div>" +
-    (choquePropio ? '<div class="note warn">Ya tenés un horario en ' + esc(nomCons(choquePropio.consultorioId)) + " de " + hm(choquePropio.desde) + " a " + hm(choquePropio.hasta) + ". Elegí otro horario.</div>" : "") +
-    (c.vencido > 0 ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido. Tus reservas quedan esperando la aprobación del dueño hasta que regularices.</div>" : "") +
-    '<section class="panel"><div class="panel-h"><div><h2>' + esc(DIAS_L[wd(f)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(f)) + '</h2><span class="small muted">Verde libre, gris ocupado. El recuadro es el horario que elegiste.</span></div><span class="small muted">' + money(precio) + " por " + fmtH(dur / 60) + '</span></div><div style="padding:8px 18px 0"><div class="slot-scale"><span>' + hm(a) + "</span><span>" + hm(Math.round((a + cz) / 120) * 60) + "</span><span>" + hm(cz) + '</span></div></div><div class="rows">' + filas + "</div></section>";
+  return html + '<div class="pv-step"><b>3</b>Tocá la hora de inicio</div>' +
+    '<section class="panel"><div class="panel-h"><div><h2>' + esc(DIAS_L[wd(f)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(f)) + '</h2><span class="small muted">Horarios libres para ' + fmtH(dur / 60) + ". En el paso siguiente podés repetirla todas las semanas.</span></div><span class=\"small muted\">" + money(precio) + " por vez</span></div>" + '<div class="rows">' + filas + "</div></section>";
 }
 function pvCuenta(p) {
   const c = cuenta(p.id);
@@ -730,12 +729,25 @@ function modalPvItem(m) {
     (pasado ? "" : '<div class="note ' + (tarde && !pend ? "warn" : "info") + '">' + (pend ? "Si cancelás, se retira el pedido sin costo." : tarde ? "Faltan menos de " + h + " h: si cancelás, el horario se libera pero <b>se cobra igual</b>." : "Faltan más de " + h + " h: podés cancelar <b>sin costo</b>.") + "</div>") +
     '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cerrar</button>' + (pasado ? "" : '<button type="button" class="btn danger" data-a="pv-cancelar" data-key="' + esc(x.key) + '">' + (x.kind === "serie" ? "No voy este día" : pend ? "Retirar el pedido" : "Cancelar reserva") + "</button>") + "</div>";
 }
+function semanasRep(m, n) {
+  const p = prof(UI.profVista), out = [];
+  for (let i = 0; i < n; i++) {
+    const f = addDays(m.fecha, 7 * i);
+    const ok = abierto(f) && libreEn(f, m.cons, m.desde, m.hasta) && !itemsProf(f, p.id).some((x) => solapa(m.desde, m.hasta, x.desde, x.hasta));
+    out.push({ f, ok });
+  }
+  return out;
+}
 function modalPvConfirm(m) {
   const p = prof(UI.profVista), c = cuenta(p.id), precio = Math.round(precioHora(p.id, m.cons) * (m.hasta - m.desde) / 60);
-  const quedaPend = c.vencido > 0;
-  return mHead("Confirmar reserva") + '<div class="modal-b"><dl class="kv"><dt>Consultorio</dt><dd>' + esc(nomCons(m.cons)) + "</dd><dt>Día</dt><dd>" + esc(fLarga(m.fecha)) + '</dd><dt>Horario</dt><dd class="num">' + hm(m.desde) + " a " + hm(m.hasta) + "</dd><dt>Costo</dt><dd>" + money(precio) + ' <span class="muted" style="font-weight:400">se suma a tu cuenta</span></dd></dl>' +
-    '<div class="note ' + (quedaPend ? "warn" : "info") + '">' + (quedaPend ? "Como tenés saldo vencido, la reserva queda <b>esperando la aprobación del dueño</b>." : "Queda <b>confirmada</b> al instante.") + " Si cancelás con menos de " + Number(D.config.horasCancelacion || 24) + " h, se cobra igual.</div>" +
-    '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Volver</button><button type="button" class="btn primary" data-a="pv-confirmar">' + (quedaPend ? "Pedir reserva" : "Confirmar reserva") + "</button></div>";
+  const quedaPend = c.vencido > 0, n = Number(m.rep || 1), sem = semanasRep(m, n), okN = sem.filter((x) => x.ok).length;
+  const ops = [[1, "Solo este día"], [4, "Todas las semanas, 1 mes"], [8, "Todas las semanas, 2 meses"], [13, "Todas las semanas, 3 meses"], [26, "Todas las semanas, 6 meses"]];
+  return mHead("Confirmar reserva") + '<div class="modal-b"><dl class="kv"><dt>Consultorio</dt><dd>' + esc(nomCons(m.cons)) + "</dd><dt>Día</dt><dd>" + esc(fLarga(m.fecha)) + '</dd><dt>Horario</dt><dd class="num">' + hm(m.desde) + " a " + hm(m.hasta) + "</dd></dl>" +
+    '<div class="field"><label for="pv-rep">Repetir</label><select class="sel" id="pv-rep" data-change="pv-rep">' + ops.map(([v, l]) => '<option value="' + v + '"' + (v === n ? " selected" : "") + ">" + l + (v > 1 ? " (los " + DIAS_L[wd(m.fecha)] + ")" : "") + "</option>").join("") + "</select></div>" +
+    (n > 1 ? '<div class="rep-list">' + sem.map((x) => '<span class="' + (x.ok ? "" : "no") + '">' + fCorta(x.f) + "</span>").join("") + "</div>" + (okN < n ? '<p class="small muted" style="margin:0">Las fechas tachadas están ocupadas o cerradas y se saltean.</p>' : "") : "") +
+    '<dl class="kv"><dt>Costo</dt><dd>' + money(precio * okN) + ' <span class="muted" style="font-weight:400">' + (okN > 1 ? okN + " veces de " + money(precio) + ", cada una se carga en su fecha" : "se suma a tu cuenta") + "</span></dd></dl>" +
+    '<div class="note ' + (quedaPend ? "warn" : "info") + '">' + (quedaPend ? "Como tenés saldo vencido, queda <b>esperando la aprobación del dueño</b>." : "Queda <b>confirmada</b> al instante.") + " Si cancelás un día con menos de " + Number(D.config.horasCancelacion || 24) + " h, ese día se cobra igual.</div>" +
+    '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Volver</button><button type="button" class="btn primary" data-a="pv-confirmar"' + (okN ? "" : " disabled") + ">" + (quedaPend ? "Pedir" : "Confirmar") + (okN > 1 ? " " + okN + " reservas" : " reserva") + "</button></div>";
 }
 function modalPvPago() {
   const p = prof(UI.profVista), c = cuenta(p.id);
@@ -1393,19 +1405,21 @@ document.addEventListener("click", async (e) => {
     case "pv-item": abrirModal({ t: "pvItem", key: el.dataset.key }); break;
     case "pv-cancelar": await cancelarItem(el.dataset.key); render(); break;
     case "pv-pago-nuevo": abrirModal({ t: "pvPago" }); break;
-    case "pv-reservar": {
-      const f = UI.pvFecha && UI.pvFecha >= hoy() ? UI.pvFecha : hoy();
-      const sel = $("#pv-desde"), desde = sel ? Number(sel.value) : UI.pvDesde;
-      abrirModal({ t: "pvConfirm", cons: el.dataset.cons, fecha: f, desde, hasta: desde + (UI.pvDur || 60) }); break;
+    case "pv-slot": {
+      const f = UI.pvFecha && UI.pvFecha >= hoy() ? UI.pvFecha : hoy(), desde = Number(v);
+      abrirModal({ t: "pvConfirm", cons: el.dataset.cons, fecha: f, desde, hasta: desde + (UI.pvDur || 60), rep: 1 }); break;
     }
     case "pv-confirmar": {
       const m = UI.modal, p = prof(UI.profVista);
-      if (!libreEn(m.fecha, m.cons, m.desde, m.hasta)) { cerrarModal(); toast("Ese horario se acaba de ocupar. Elegí otro."); render(); break; }
-      if (itemsProf(m.fecha, p.id).some((x) => solapa(m.desde, m.hasta, x.desde, x.hasta))) { cerrarModal(); toast("Ya tenés otro horario en ese momento."); break; }
-      const pend = cuenta(p.id).vencido > 0, oid = uid(), importe = Math.round(precioHora(p.id, m.cons) * (m.hasta - m.desde) / 60);
-      await put("ocupaciones", oid, { consultorioId: m.cons, profesionalId: p.id, tipo: "reserva", fecha: m.fecha, desde: m.desde, hasta: m.hasta, estado: pend ? "pendiente" : "confirmada", importe, nota: "", origen: "portal", creado: new Date().toISOString() });
-      if (!pend && importe > 0) await put("movimientos", "res-" + oid, { profesionalId: p.id, tipo: "cargo", importe, fecha: m.fecha, concepto: "Reserva " + nomCons(m.cons) + " " + fCorta(m.fecha) + " " + hm(m.desde) + "–" + hm(m.hasta), ref: oid });
-      cerrarModal(); UI.pvTab = "inicio"; render(); toast(pend ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Reserva confirmada"); break;
+      const fechas = semanasRep(m, Number(m.rep || 1)).filter((x) => x.ok).map((x) => x.f);
+      if (!fechas.length) { cerrarModal(); toast("Ese horario se acaba de ocupar. Elegí otro."); render(); break; }
+      const pend = cuenta(p.id).vencido > 0, importe = Math.round(precioHora(p.id, m.cons) * (m.hasta - m.desde) / 60);
+      for (const f of fechas) {
+        const oid = uid();
+        await put("ocupaciones", oid, { consultorioId: m.cons, profesionalId: p.id, tipo: "reserva", fecha: f, desde: m.desde, hasta: m.hasta, estado: pend ? "pendiente" : "confirmada", importe, nota: "", origen: "portal", creado: new Date().toISOString() });
+        if (!pend && importe > 0) await put("movimientos", "res-" + oid, { profesionalId: p.id, tipo: "cargo", importe, fecha: f, concepto: "Reserva " + nomCons(m.cons) + " " + fCorta(f) + " " + hm(m.desde) + "–" + hm(m.hasta), ref: oid });
+      }
+      cerrarModal(); UI.pvTab = "inicio"; render(); toast((pend ? "Pedido enviado" : "Listo") + ": " + fechas.length + (fechas.length > 1 ? " reservas" : " reserva") + (pend ? ". Te avisamos cuando el dueño apruebe." : " confirmada" + (fechas.length > 1 ? "s" : ""))); break;
     }
     case "pend-aprobar": {
       const o = D.ocupaciones[id]; if (!o) break;
@@ -1536,6 +1550,7 @@ document.addEventListener("change", (e) => {
   if (k === "pago-prof") { UI.modal.id = el.value; renderModal(); return; }
   if (k === "pv-prof") { UI.profVista = el.value; UI.pvDesde = null; render(); return; }
   if (k === "pv-desde") { UI.pvDesde = Number(el.value); render(); return; }
+  if (k === "pv-rep") { if (UI.modal) { UI.modal.rep = Number(el.value); renderModal(); } return; }
   if (k === "prof-calc") {
     const f = el.closest("form"); if (!f) return;
     const forma = (f.querySelector('input[name="forma"]:checked') || {}).value || "hora";

@@ -104,9 +104,18 @@ rep('''async function iniciar() {
 function pantallaLogin(msg) {
   $("#appRoot").hidden = true; $("#bottomNav").hidden = true; $("#loginRoot").hidden = false;
   $("#loginRoot").innerHTML = '<div class="login"><form class="login-card" data-form="login"><div class="brand"><div class="brand-mark" aria-hidden="true">C</div><div><div class="brand-name">Mis Consultorios</div><div class="brand-sub">Agenda, alquileres y cobros</div></div></div>' +
-    (msg ? '<div class="note ' + (msg.tipo || "info") + '">' + msg.html + "</div>" : '<h1>Entrar</h1><p class="muted" style="margin:0">Poné tu mail y te mandamos un enlace para entrar. No hace falta contraseña.</p>') +
-    (msg && msg.sinForm ? "" : '<div class="field"><label for="lg-mail">Tu mail</label><input class="inp" id="lg-mail" name="email" type="email" autocomplete="email" required></div><button class="btn primary" type="submit">Mandarme el enlace</button>') +
+    (msg ? '<div class="note ' + (msg.tipo || "info") + '">' + msg.html + "</div>" : "<h1>Entrar</h1>") +
+    (msg && msg.sinForm ? "" : '<div class="field"><label for="lg-mail">Tu mail</label><input class="inp" id="lg-mail" name="email" type="email" autocomplete="email" required value="' + esc((msg && msg.mail) || "") + '"></div>' +
+      '<div class="field"><label for="lg-pass">Contraseña</label><input class="inp" id="lg-pass" name="clave" type="password" autocomplete="current-password"></div><button class="btn primary" type="submit">Entrar</button>' +
+      '<button type="button" class="btn ghost" data-a="login-enlace">Es mi primera vez u olvidé la contraseña</button>') +
     (msg && msg.salir ? '<button type="button" class="btn" data-a="salir">Entrar con otro mail</button>' : "") + "</form></div>";
+}
+function pantallaClave(msg) {
+  $("#appRoot").hidden = true; $("#bottomNav").hidden = true; $("#loginRoot").hidden = false;
+  $("#loginRoot").innerHTML = '<div class="login"><form class="login-card" data-form="clave"><h1>Creá tu contraseña</h1><p class="muted" style="margin:0">La vas a usar junto con tu mail para entrar desde cualquier dispositivo. Mínimo 8 caracteres.</p>' +
+    (msg ? '<div class="note warn">' + esc(msg) + "</div>" : "") +
+    '<div class="field"><label for="ck-1">Contraseña nueva</label><input class="inp" id="ck-1" name="c1" type="password" autocomplete="new-password" minlength="8" required></div>' +
+    '<div class="field"><label for="ck-2">Repetila</label><input class="inp" id="ck-2" name="c2" type="password" autocomplete="new-password" minlength="8" required></div><button class="btn primary" type="submit">Guardar y entrar</button></form></div>';
 }
 function mostrarApp() { $("#loginRoot").hidden = true; $("#appRoot").hidden = false; $("#bottomNav").hidden = false; }
 async function cargarTodo() {
@@ -149,6 +158,7 @@ async function iniciar() {
   if (error) { console.error(error); return pantallaLogin({ tipo: "warn", html: "No pude conectar con la base de datos.<br><small>" + esc((error.code ? error.code + " · " : "") + (error.message || "")) + "</small>", salir: true, sinForm: true }); }
   MI_MAIL = v.email || session.user.email || "";
   if (!v.rol) return pantallaLogin({ tipo: "warn", html: "Entraste como <b>" + esc(MI_MAIL) + "</b>, pero ese mail no está cargado en ningún profesional. Pedile al dueño que lo agregue en tu ficha y volvé a entrar.", salir: true, sinForm: true });
+  if (!(session.user.user_metadata || {}).clave) return pantallaClave();
   ROL = v.rol; MI_PROF = v.prof_id || null;
   mostrarApp();
   $("#userMail").textContent = MI_MAIL;
@@ -178,13 +188,21 @@ rep('''    case "pv-confirmar": {
       const m = UI.modal, p = prof(UI.profVista);
       if (ROL === "profesional") {
         el.disabled = true;
-        const { data, error } = await SB.rpc("pv_reservar", { p_cons: m.cons, p_fecha: m.fecha, p_desde: m.desde, p_hasta: m.hasta });
+        const { data, error } = await SB.rpc("pv_reservar", { p_cons: m.cons, p_fecha: m.fecha, p_desde: m.desde, p_hasta: m.hasta, p_semanas: Number(m.rep || 1) });
         if (error) { el.disabled = false; cerrarModal(); await cargarAgenda(); render(); toast(error.message || "No se pudo reservar."); break; }
-        cerrarModal(); await cargarTodo(); UI.pvTab = "inicio"; render(); toast(data.estado === "pendiente" ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Reserva confirmada"); break;
+        cerrarModal(); await cargarTodo(); UI.pvTab = "inicio"; render(); toast((data.estado === "pendiente" ? "Pedido enviado: " : "Listo: ") + data.creadas + (data.creadas > 1 ? " reservas" : " reserva") + (data.salteadas && data.salteadas.length ? " (" + data.salteadas.length + " fechas ocupadas salteadas)" : "") + (data.estado === "pendiente" ? ". Te avisamos cuando el dueño apruebe." : "")); break;
       }''')
 rep('''    case "pv-tab": UI.pvTab = v; cerrarModal(); render(); window.scrollTo(0, 0); break;''',
     '''    case "pv-tab": UI.pvTab = v; cerrarModal(); if (ROL === "profesional" && v === "reservar") await cargarAgenda(); render(); window.scrollTo(0, 0); break;
-    case "salir": await SB.auth.signOut(); location.reload(); break;''')
+    case "salir": await SB.auth.signOut(); location.reload(); break;
+    case "login-enlace": {
+      const mail = String(($("#lg-mail") || {}).value || "").trim();
+      if (!mail) { pantallaLogin({ tipo: "warn", html: "Escribí tu mail arriba y volvé a tocar el botón." }); break; }
+      const { error } = await SB.auth.signInWithOtp({ email: mail, options: { emailRedirectTo: location.origin + "/" } });
+      if (error) pantallaLogin({ tipo: "warn", html: "No se pudo mandar el enlace: " + esc(error.message) + ". Esperá un minuto y probá de nuevo.", mail });
+      else pantallaLogin({ tipo: "good", html: "Te mandamos un enlace a <b>" + esc(mail) + "</b>. Abrilo, y ahí vas a crear tu contraseña. Si no llega, revisá spam.", sinForm: true, salir: true });
+      break;
+    }''')
 
 # ---------- descargas con el navegador ----------
 rep('''  if (!downloads) return toast("Esta vista no permite descargar archivos. Abrí la app desde Claude.");
@@ -229,11 +247,21 @@ rep('''  const sc2 = document.querySelector(".grid-scroll"); if (sc2 && left) sc
     '''  const sc2 = document.querySelector(".grid-scroll"); if (sc2 && left) sc2.scrollLeft = left;
   if (UI.tab === "mas" && UI.seccionMas === "ajustes") pintarAccesos();''')
 rep('''    case "socio": {''', '''    case "login": {
-      const mail = String(fd.get("email") || "").trim(); if (!mail) return;
-      const { error } = await SB.auth.signInWithOtp({ email: mail, options: { emailRedirectTo: location.origin + location.pathname } });
-      if (error) pantallaLogin({ tipo: "warn", html: "No se pudo mandar el enlace: " + esc(error.message) + ". Esperá un minuto y probá de nuevo." });
-      else pantallaLogin({ tipo: "good", html: "Te mandamos un enlace a <b>" + esc(mail) + "</b>. Abrilo desde este mismo dispositivo para entrar. Si no llega, revisá spam.", sinForm: true, salir: true });
+      const mail = String(fd.get("email") || "").trim(), clave = String(fd.get("clave") || "");
+      if (!mail) return;
+      if (!clave) { pantallaLogin({ tipo: "warn", html: "Poné tu contraseña. Si es tu primera vez o no la recordás, tocá el botón de abajo y te mandamos un enlace por mail.", mail }); break; }
+      const { error } = await SB.auth.signInWithPassword({ email: mail, password: clave });
+      if (error) pantallaLogin({ tipo: "warn", html: /invalid/i.test(error.message) ? "Mail o contraseña incorrectos. Si todavía no creaste tu contraseña, tocá <b>Es mi primera vez</b>." : "No se pudo entrar: " + esc(error.message), mail });
+      else iniciar();
       break;
+    }
+    case "clave": {
+      const c1 = String(fd.get("c1") || ""), c2 = String(fd.get("c2") || "");
+      if (c1.length < 8) return pantallaClave("Tiene que tener al menos 8 caracteres.");
+      if (c1 !== c2) return pantallaClave("Las dos contraseñas no coinciden.");
+      const { error } = await SB.auth.updateUser({ password: c1, data: { clave: true } });
+      if (error) return pantallaClave("No se pudo guardar: " + error.message);
+      toast("Contraseña guardada"); iniciar(); break;
     }
     case "dueno-nuevo": {
       const { data, error } = await SB.rpc("hacer_dueno", { mail: g("email") });
