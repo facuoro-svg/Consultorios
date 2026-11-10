@@ -484,13 +484,32 @@ function totalPlan(plan) {
   for (const mod of tarifario().modulos) { const q = Number((plan || {})[mod.id] || 0); precio += q * Number(mod.precio || 0); horas += q * Number(mod.horas || 0); }
   return { precio, horas };
 }
+const textoExtra = (p) => (p.extraPorHora ? " + horas fijas de más a " + money(precioHora(p.id, null)) + "/h" : "");
+// Horas fijas por encima del plan, semana por semana (lunes a domingo) dentro del mes
+function horasExtraMes(p, ym) {
+  const plan = Number(p.horasPlan) || 0, n = diasDelMes(ym), sem = {};
+  let total = 0, horas = 0;
+  for (let d = 1; d <= n; d++) {
+    const f = ym + "-" + pad(d), k = addDays(f, -wd(f));
+    for (const s of lista("series")) {
+      if (s.profesionalId !== p.id || s.tipo !== "contrato" || s.dia !== wd(f) || s.inicio > f || (s.fin && f > s.fin)) continue;
+      const ex = (s.excepciones || {})[f]; if (ex && !ex.tarde) continue;
+      (sem[k] = sem[k] || []).push({ hs: (s.hasta - s.desde) / 60, precio: precioHora(p.id, s.consultorioId) });
+    }
+  }
+  for (const k of Object.keys(sem)) {
+    const tot = sem[k].reduce((t, x) => t + x.hs, 0), extra = Math.max(0, tot - plan);
+    if (extra > 0) { const pr = sem[k].reduce((t, x) => t + x.hs * x.precio, 0) / tot; horas += extra; total += extra * pr; }
+  }
+  return { horas, total: Math.round(total) };
+}
 function textoPlan(p) {
   if (p.modalidad !== "mensual") return "Por hora " + money(precioHora(p.id, null)) + (Number(p.precioHora) ? "" : " (tarifa general)");
   if (p.planTipo === "modulos") {
     const partes = tarifario().modulos.filter((m) => Number((p.plan || {})[m.id])).map((m) => (Number(p.plan[m.id]) > 1 ? p.plan[m.id] + "× " : "") + m.nombre);
-    return (partes.join(" + ") || "Módulos") + " · " + money(p.precioMensual) + " por mes";
+    return (partes.join(" + ") || "Módulos") + " · " + money(p.precioMensual) + " por mes" + textoExtra(p);
   }
-  return "Precio especial " + money(p.precioMensual) + " por mes";
+  return "Precio especial " + money(p.precioMensual) + " por mes" + textoExtra(p);
 }
 function horasSemanaFijas(profId) {
   // horas de horarios fijos en los próximos 7 días (incluye cambios ya programados)
@@ -538,6 +557,7 @@ function cargosPropuestosMes(ym) {
   for (const p of profesionalesAct()) {
     if (p.modalidad === "mensual") {
       if (Number(p.precioMensual) > 0) out.push({ id: "mes-" + ym + "-" + p.id, profesionalId: p.id, importe: Number(p.precioMensual), concepto: "Alquiler mensual " + mesLabel(ym).toLowerCase(), detalle: "Precio fijo mensual" });
+      if (p.extraPorHora) { const ex = horasExtraMes(p, ym); if (ex.total > 0) out.push({ id: "ext-" + ym + "-" + p.id, profesionalId: p.id, importe: ex.total, concepto: "Horas fijas fuera del plan " + mesLabel(ym).toLowerCase() + " (" + fmtH(ex.horas) + ")", detalle: fmtH(ex.horas) + " por encima de " + fmtH(Number(p.horasPlan) || 0) + " semanales" }); }
     } else {
       let horas = 0, total = 0;
       for (let d = 1; d <= n; d++) {
@@ -1151,7 +1171,7 @@ function modalItem(m) {
   const p = x.profesionalId ? prof(x.profesionalId) : null;
   let cobro = "Sin cargo";
   if (x.tipo === "reserva") cobro = money(x.importe || 0) + (D.movimientos["res-" + x.id] ? " · cargado en su cuenta" : "");
-  if (x.tipo === "contrato" && p) cobro = p.modalidad === "mensual" ? "Incluido en el alquiler mensual" : "Se suma al cierre del mes (" + money(precioHora(p.id, x.consultorioId)) + "/h)";
+  if (x.tipo === "contrato" && p) cobro = p.modalidad === "mensual" ? (p.extraPorHora ? "Incluido en el plan; lo que pase las " + fmtH(Number(p.horasPlan) || 0) + " semanales se cobra a " + money(precioHora(p.id, x.consultorioId)) + "/h" : "Incluido en el alquiler mensual") : "Se suma al cierre del mes (" + money(precioHora(p.id, x.consultorioId)) + "/h)";
   const conf = m.confirmar;
   let acciones;
   if (conf === "cancelar") acciones = '<div class="note ' + (tarde && (x.tipo === "reserva" || x.tipo === "contrato") ? "warn" : "info") + '">' + (x.tipo === "reserva" || x.tipo === "contrato" ? (tarde ? "Faltan menos de " + D.config.horasCancelacion + " h: el horario queda libre pero <b>el cargo se mantiene</b>." : "Faltan más de " + D.config.horasCancelacion + " h: el horario queda libre <b>sin cargo</b>.") : "El horario queda libre.") + '</div><div class="modal-f" style="padding:0;border:0"><button type="button" class="btn" data-a="item-volver">Volver</button><button type="button" class="btn danger" data-a="item-cancelar" data-key="' + esc(x.key) + '">Sí, cancelar ' + (x.kind === "serie" ? "este " + DIAS_L[wd(x.fecha)] : "la reserva") + "</button></div>";
@@ -1197,6 +1217,7 @@ function profPagoHTML(p) {
       '<div class="note info" id="pf-total">Total: <b>' + money(tot.precio) + "</b> por mes · " + tot.horas + " h semanales</div>"
       : '<div class="note warn">Todavía no cargaste módulos. Cargalos en <b>Más › Tarifas</b>.</div>') + "</div>" +
     '<div id="pf-especial"' + (forma === "especial" ? "" : " hidden") + ' class="grid2"><div class="field"><label for="p-pm">Precio mensual</label><input class="inp" id="p-pm" name="precioMensual" type="number" min="0" step="100" value="' + esc(p.precioMensual || "") + '"></div><div class="field"><label for="p-hp">Horas semanales incluidas</label><input class="inp" id="p-hp" name="horasPlan" type="number" min="0" step="0.5" value="' + esc(p.horasPlan || "") + '" placeholder="Opcional"></div></div>' +
+    '<div id="pf-extra"' + (forma === "hora" ? " hidden" : "") + ' class="note info" style="display:flex;flex-direction:column;gap:6px"><label class="check" style="font-weight:600"><input type="checkbox" name="extraPorHora"' + (p.extraPorHora ? " checked" : "") + "> Mixto: cobrar por hora los horarios fijos que pasen las horas del plan</label><span class=\"small\">Las reservas sueltas siempre se cobran aparte, por hora.</span></div>" +
     '<div class="field"><label for="p-ph">Precio por hora para reservas sueltas y horas extra</label><input class="inp" id="p-ph" name="precioHora" type="number" min="0" step="100" value="' + esc(p.precioHora || "") + '" placeholder="Vacío = tarifa general ' + money(tf.hora) + '"></div>';
 }
 function modalPago(m) {
@@ -1618,6 +1639,7 @@ document.addEventListener("change", (e) => {
     const forma = (f.querySelector('input[name="forma"]:checked') || {}).value || "hora";
     const pm = f.querySelector("#pf-modulos"), pe = f.querySelector("#pf-especial");
     if (pm) pm.hidden = forma !== "modulos"; if (pe) pe.hidden = forma !== "especial";
+    const px = f.querySelector("#pf-extra"); if (px) px.hidden = forma === "hora";
     const plan = {}; tarifario().modulos.forEach((mod) => { const i = f.querySelector('[name="mod_' + mod.id + '"]'); if (i && Number(i.value) > 0) plan[mod.id] = Number(i.value); });
     const tot = totalPlan(plan), out = f.querySelector("#pf-total");
     if (out) out.innerHTML = "Total: <b>" + money(tot.precio) + "</b> por mes · " + tot.horas + " h semanales";
@@ -1670,7 +1692,7 @@ document.addEventListener("submit", async (e) => {
       const precioMensual = forma === "modulos" ? tot.precio : forma === "especial" ? Number(g("precioMensual")) || 0 : 0;
       if (forma === "modulos" && !tot.precio) { UI.modal.err = "Elegí al menos un módulo."; return renderModal(); }
       if (forma === "especial" && !precioMensual) { UI.modal.err = "Cargá el precio mensual especial."; return renderModal(); }
-      await put("profesionales", id, { ...viejo, nombre: g("nombre"), profesion: g("profesion"), matricula: g("matricula"), telefono: g("telefono"), email: g("email"), modalidad: forma === "hora" ? "hora" : "mensual", planTipo: forma === "hora" ? null : forma, plan: forma === "modulos" ? plan : {}, horasPlan: forma === "modulos" ? tot.horas : forma === "especial" ? Number(g("horasPlan")) || 0 : 0, precioHora: Number(g("precioHora")) || 0, precioMensual, notas: g("notas"), activo: viejo.activo !== false, alta: viejo.alta || hoy() });
+      await put("profesionales", id, { ...viejo, nombre: g("nombre"), profesion: g("profesion"), matricula: g("matricula"), telefono: g("telefono"), email: g("email"), modalidad: forma === "hora" ? "hora" : "mensual", planTipo: forma === "hora" ? null : forma, plan: forma === "modulos" ? plan : {}, horasPlan: forma === "modulos" ? tot.horas : forma === "especial" ? Number(g("horasPlan")) || 0 : 0, precioHora: Number(g("precioHora")) || 0, precioMensual, extraPorHora: forma !== "hora" && fd.get("extraPorHora") === "on", notas: g("notas"), activo: viejo.activo !== false, alta: viejo.alta || hoy() });
       toast("Profesional guardado"); abrirModal({ t: "prof", id, wide: true }); break;
     }
     case "pago": {
