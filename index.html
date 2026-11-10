@@ -1089,7 +1089,7 @@ function secAjustes() {
     '<section class="panel"><div class="panel-h"><h2>Respaldo</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
     '<p class="muted" style="margin:0">Tenés ' + n.cons + " consultorios, " + n.prof + " profesionales, " + n.res + " reservas sueltas y " + n.mov + " movimientos (" + usados + " registros de 5.000 posibles). Bajá una copia de vez en cuando.</p>" +
     '<div class="tools"><button class="btn" type="button" data-a="exportar">Descargar respaldo</button><button class="btn" type="button" data-a="exportar-csv">Descargar movimientos (CSV)</button>' +
-    '<label class="btn" for="importar" style="cursor:pointer">Restaurar desde archivo</label><input id="importar" type="file" accept=".json,application/json" data-change="importar" hidden></div>' +
+    '<label class="btn" for="importar" style="cursor:pointer">Restaurar desde archivo (reemplaza todo)</label><input id="importar" type="file" accept=".json,application/json" data-change="importar" hidden></div>' +
     "</div></section>" +
     '<section class="panel"><div class="panel-h"><h2>Accesos</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:12px">' +
     '<p class="muted" style="margin:0">Para que un profesional entre, cargá su mail en su ficha (Profesionales). Después entra a esta misma dirección con ese mail y ve solo lo suyo.</p>' +
@@ -1419,6 +1419,8 @@ async function importar(file) {
     const filas = [];
     if (o.config) filas.push({ col: "config", id: "main", data: { ...D.config, ...o.config } });
     for (const c of COLS) for (const r of o[c] || []) if (r && r.id) { const d = { ...r }; delete d.id; filas.push({ col: c, id: r.id, data: d }); }
+    const borrar = await SB.from("docs").delete().neq("col", "");
+    if (borrar.error) throw borrar.error;
     await putMuchos(filas); await cargarTodo(); render();
     toast("Respaldo restaurado: " + filas.length + " registros");
   } catch (e) { toast("No se pudo leer el archivo."); }

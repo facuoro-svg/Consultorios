@@ -205,6 +205,8 @@ rep('''    if (o.config) await putConfig(o.config);
     const filas = [];
     if (o.config) filas.push({ col: "config", id: "main", data: { ...D.config, ...o.config } });
     for (const c of COLS) for (const r of o[c] || []) if (r && r.id) { const d = { ...r }; delete d.id; filas.push({ col: c, id: r.id, data: d }); }
+    const borrar = await SB.from("docs").delete().neq("col", "");
+    if (borrar.error) throw borrar.error;
     await putMuchos(filas); await cargarTodo(); render();
     toast("Respaldo restaurado: " + filas.length + " registros");''')
 
@@ -239,5 +241,6 @@ rep('''    case "socio": {''', '''    case "login": {
     }
     case "socio": {''')
 
+rep('>Restaurar desde archivo</label>', '>Restaurar desde archivo (reemplaza todo)</label>')
 open('index.html', 'w', encoding='utf-8').write(s)
 print('index.html', len(s))
