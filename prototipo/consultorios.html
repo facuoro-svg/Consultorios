@@ -522,10 +522,12 @@ function modalPasarContrato(m) {
     '<div class="grid2"><div class="field"><label for="pc-pr">Cuota mensual</label><input class="inp" type="number" id="pc-pr" name="precio" min="0" step="100" value="' + sugerido + '"><span class="small muted">' + (p.modalidad === "mensual" ? "Es lo que paga hoy" : "Calculado con tus módulos") + '</span></div><div class="field"><label for="pc-aj">Ajuste cada 3 meses (%)</label><input class="inp" type="number" id="pc-aj" name="ajustePct" min="0" step="0.5" value="' + esc(tarifario().ajustePct) + '"></div></div>' +
     '</div><div class="modal-f"><button type="button" class="btn" data-a="cerrar">Cancelar</button><button type="submit" class="btn primary">Pasar a contrato</button></div></form>';
 }
+// Un contrato cuenta si está activo y su profesional no fue dado de baja
+const contratoCuenta = (c) => c.estado === "activo" && !!prof(c.profesionalId) && prof(c.profesionalId).activo !== false;
 function cargosContratosMes(ym) {
   const ini = ym + "-01", n = diasDelMes(ym), fin = ym + "-" + pad(n), out = [];
   for (const c of lista("contratos")) {
-    if (c.estado !== "activo" || c.inicio > fin || c.fin < ini) continue;
+    if (!contratoCuenta(c) || c.inicio > fin || c.fin < ini) continue;
     const a = c.inicio > ini ? c.inicio : ini, b = c.fin < fin ? c.fin : fin;
     const dias = Math.round((fromISO(b) - fromISO(a)) / 864e5) + 1, precio = precioContrato(c, a);
     const importe = Math.round((precio * dias) / n / 100) * 100;
@@ -757,7 +759,7 @@ function statsConsultorios(ym) {
   // Ingresos de horarios fijos: lo cargado en el mes (o lo que corresponde si todavía no se generó), repartido según las horas en cada sala
   const cargosMes = {};
   lista("movimientos").filter((m) => m.tipo === "cargo" && mesDe(m.fecha) === ym && !String(m.id).startsWith("res-")).forEach((m) => (cargosMes[m.profesionalId] = (cargosMes[m.profesionalId] || 0) + Number(m.importe || 0)));
-  const propuestos = {}; cargosPropuestosMes(ym).forEach((c) => (propuestos[c.profesionalId] = c.importe));
+  const propuestos = {}; cargosPropuestosMes(ym).filter((c) => !String(c.id).startsWith("res-")).forEach((c) => (propuestos[c.profesionalId] = (propuestos[c.profesionalId] || 0) + c.importe));
   Object.keys(horasProf).forEach((pid) => {
     const total = cargosMes[pid] != null ? cargosMes[pid] : propuestos[pid] || 0;
     Object.keys(horasProfCons).filter((k) => k.startsWith(pid + "|")).forEach((k) => { const cid = k.split("|")[1]; if (st[cid]) st[cid].ingFijos += total * (horasProfCons[k] / horasProf[pid]); });
@@ -1018,7 +1020,7 @@ function cardContrato(c, paraDueno) {
     "</div></div>";
 }
 function secContratos() {
-  const h = hoy(), cs = lista("contratos").filter((c) => c.estado !== "cancelado").sort((a, b) => (a.estado === "pendiente" ? -1 : 0) - (b.estado === "pendiente" ? -1 : 0) || (a.fin < b.fin ? -1 : 1));
+  const h = hoy(), cs = lista("contratos").filter((c) => c.estado !== "cancelado" && (c.estado !== "activo" || contratoCuenta(c) || c.fin < h)).sort((a, b) => (a.estado === "pendiente" ? -1 : 0) - (b.estado === "pendiente" ? -1 : 0) || (a.fin < b.fin ? -1 : 1));
   const vig = cs.filter((c) => c.estado === "activo" && c.fin >= h), hist = cs.filter((c) => c.fin < h);
   const aseg = aseguradoMeses(mesDe(h), 6), hsCont = vig.filter((c) => c.inicio <= h).reduce((t, c) => t + horasFranjas(c.franjas), 0);
   const dispSem = [0, 1, 2, 3, 4, 5, 6].filter((i) => (D.config.diasAbiertos || DEF_CONFIG.diasAbiertos)[i]).length * (cierraMin() - abreMin()) / 60 * consultoriosAct().length;
@@ -1077,7 +1079,7 @@ function vistaInicio() {
   const h = hoy(), ym = UI.mesInicio || mesDe(h), esActual = ym === mesDe(h), esFuturo = ym > mesDe(h);
   const corte = esActual || esFuturo ? h : ym + "-" + pad(diasDelMes(ym));
   const movsMes = lista("movimientos").filter((m) => mesDe(m.fecha) === ym);
-  const facturado = movsMes.filter((m) => m.tipo === "cargo").reduce((t, m) => t + Number(m.importe || 0), 0);
+  const facturado = movsMes.filter((m) => m.tipo === "cargo").reduce((t, m) => t + Number(m.importe || 0), 0) - movsMes.filter((m) => m.tipo === "credito").reduce((t, m) => t + Number(m.importe || 0), 0);
   const cobrado = movsMes.filter((m) => m.tipo === "pago").reduce((t, m) => t + Number(m.importe || 0), 0);
   const gastosMes = lista("gastos").filter((g) => mesDe(g.fecha) === ym).reduce((t, g) => t + Number(g.importe || 0), 0);
   // ocupación del mes
@@ -1111,8 +1113,8 @@ function vistaInicio() {
   }
   if (esActual) {
     lista("contratos").filter((c) => c.estado === "pendiente").forEach((c) => atencion.push('<div class="row"><span class="pill warn">Horario fijo pedido</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + " · debe " + money(cuenta(c.profesionalId).vencido) + '</span></div><button class="btn sm" data-a="ct-rechazar" data-id="' + c.id + '">Rechazar</button><button class="btn sm primary" data-a="ct-aprobar" data-id="' + c.id + '">Aprobar</button></div>'));
-    lista("contratos").filter((c) => c.estado === "activo" && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).sort((a, b) => (a.fin < b.fin ? -1 : 1)).forEach((c) => atencion.push('<div class="row"><span class="pill warn">Vence ' + fCorta(c.fin) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + '</span></div><button class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar</button></div>'));
-    lista("contratos").filter((c) => c.estado === "activo").map((c) => ({ c, f: proxAjuste(c, h) })).filter((x) => x.f && (fromISO(x.f) - fromISO(h)) / 864e5 <= 15).forEach((x) => atencion.push('<div class="row"><span class="pill info">Aumento ' + fCorta(x.f) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(x.c.profesionalId)) + " · +" + x.c.ajustePct + '%</span><span class="small muted">' + money(precioContrato(x.c, h)) + " → " + money(precioContrato(x.c, x.f)) + " por mes · se aplica solo</span></div></div>"));
+    lista("contratos").filter((c) => contratoCuenta(c) && c.fin >= h && (fromISO(c.fin) - fromISO(h)) / 864e5 <= 30).sort((a, b) => (a.fin < b.fin ? -1 : 1)).forEach((c) => atencion.push('<div class="row"><span class="pill warn">Vence ' + fCorta(c.fin) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(c.profesionalId)) + " · " + nomPlazo(c.plazo) + '</span><span class="small muted">' + esc(textoFranjas(c.franjas)) + '</span></div><button class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar</button></div>'));
+    lista("contratos").filter((c) => contratoCuenta(c)).map((c) => ({ c, f: proxAjuste(c, h) })).filter((x) => x.f && (fromISO(x.f) - fromISO(h)) / 864e5 <= 15).forEach((x) => atencion.push('<div class="row"><span class="pill info">Aumento ' + fCorta(x.f) + '</span><div class="row-main"><span class="row-title">' + esc(nomProf(x.c.profesionalId)) + " · +" + x.c.ajustePct + '%</span><span class="small muted">' + money(precioContrato(x.c, h)) + " → " + money(precioContrato(x.c, x.f)) + " por mes · se aplica solo</span></div></div>"));
   }
   if (esActual) fijosDelMes(ym).concat(fijosDelMes(addMonths(ym, -1)).filter((x) => x.estado === "vencido")).filter((x) => !x.pago && x.vence <= addDays(h, 5)).forEach((x) => atencion.push('<div class="row"><span class="pill ' + (x.vence < h ? "bad" : "warn") + '">' + (x.vence < h ? "Venció" : "Vence") + " " + fCorta(x.vence) + '</span><div class="row-main"><span class="row-title">' + esc(x.gf.descripcion || x.gf.categoria) + '</span><span class="small muted">' + esc(x.gf.categoria) + (x.gf.importe ? " · aprox. " + money(x.gf.importe) : "") + '</span></div><button class="btn sm primary" data-a="gf-pagar" data-id="' + x.gf.id + '" data-v="' + x.ym + '">Pagado</button></div>'));
   if (generados.length && !esFuturo) atencion.push('<div class="row"><span class="pill info">Cargos</span><div class="row-main"><span class="row-title">Faltan generar ' + generados.length + " cargos de " + mesN + '</span><span class="small muted">' + money(generados.reduce((t, c) => t + c.importe, 0)) + ' entre alquileres mensuales y horarios fijos</span></div><button class="btn sm primary" data-a="ir-cobros" data-v="' + ym + '">Revisar</button></div>');
@@ -1829,6 +1831,7 @@ document.addEventListener("click", async (e) => {
       if (p.activo === false) { await put("profesionales", id, { ...p, activo: true }); toast("Reactivado. Volvé a cargar sus horarios fijos si los retoma."); renderModal(); break; }
       if (!UI.modal.confirmarBaja) { UI.modal.confirmarBaja = true; renderModal(); break; }
       const h = hoy(); let n = 0;
+      for (const c of lista("contratos").filter((x) => x.profesionalId === id && x.estado !== "cancelado" && x.fin >= h)) await terminarContrato(c, h);
       for (const sr of lista("series").filter((x) => x.profesionalId === id && (!x.fin || x.fin >= h))) { n++; if (sr.inicio > h) await del("series", sr.id); else await put("series", sr.id, { ...sr, fin: h }); }
       await put("profesionales", id, { ...p, activo: false, baja: h });
       toast("Dado de baja." + (n ? " Se liberaron " + n + " horarios fijos desde mañana." : "") + " Su cuenta queda guardada.");
