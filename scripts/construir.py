@@ -289,11 +289,13 @@ rep("""      const S = UI.cf, paraDueno = !!UI.modal, fin = finContrato(S.inicio
       if (!S.franjas.length) break;
       if (ROL === "profesional") {
         el.disabled = true;
-        const { data, error } = await SB.rpc("pv_contratar", { p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo, p_modulo: S.modId || null });
+        const { data, error } = S.cambiaId
+          ? await SB.rpc("pv_cambiar", { p_id: S.cambiaId, p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo, p_modulo: S.modId || null })
+          : await SB.rpc("pv_contratar", { p_franjas: S.franjas, p_inicio: S.inicio, p_plazo: S.plazo, p_modulo: S.modId || null });
         el.disabled = false;
         if (error) { await cargarAgenda(); render(); toast(error.message || "No se pudo confirmar."); break; }
         UI.cf = null; await cargarTodo(); UI.pvTab = "inicio"; render(); window.scrollTo(0, 0);
-        toast(data.estado === "pendiente" ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
+        toast(S.cambiaId ? "Listo: plan nuevo desde el " + fCorta(S.inicio) : data.estado === "pendiente" ? "Pedido enviado. Te avisamos cuando el dueño lo apruebe." : "Listo: horario fijo confirmado"); break;
       }""")
 rep("""      const c = D.contratos[id]; if (!c) break;
       const r = await renovarContrato(c);""", """      const c = D.contratos[id]; if (!c) break;

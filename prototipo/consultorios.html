@@ -479,7 +479,7 @@ async function crearContrato(d) {
     const sid = uid(); seriesIds.push(sid);
     await put("series", sid, { consultorioId: fr.consultorioId, profesionalId: d.profesionalId, dia: fr.dia, desde: fr.desde, hasta: fr.hasta, inicio: d.inicio, fin, tipo: "contrato", contratoId: id, nota: "", ...(estado === "pendiente" ? { estado: "pendiente" } : {}) });
   }
-  await put("contratos", id, { profesionalId: d.profesionalId, franjas: d.franjas, plazo: Number(d.plazo), mesesTotal: Number(d.plazo), inicio: d.inicio, fin, precio, ajustePct: Number(d.ajustePct != null ? d.ajustePct : tarifario().ajustePct) || 0, estado, seriesIds, moduloId: d.moduloId || null, origen: d.origen || "dueno", creado: new Date().toISOString() });
+  await put("contratos", id, { profesionalId: d.profesionalId, franjas: d.franjas, plazo: Number(d.plazo), mesesTotal: Number(d.plazo), inicio: d.inicio, fin, precio, ajustePct: Number(d.ajustePct != null ? d.ajustePct : tarifario().ajustePct) || 0, estado, seriesIds, moduloId: d.moduloId || null, origen: d.origen || "dueno", ...(d.reemplaza ? { reemplaza: d.reemplaza } : {}), creado: new Date().toISOString() });
   return id;
 }
 async function setSeriesContrato(c, cambios) {
@@ -845,7 +845,7 @@ function pvInicio(p) {
     (prox ? '<div class="pv-hero"><span class="pv-k">Tu próximo horario</span><span class="pv-big">' + (prox.fecha === h ? "Hoy" : prox.fecha === addDays(h, 1) ? "Mañana" : DIAS_L[wd(prox.fecha)].replace(/^./, (z) => z.toUpperCase()) + " " + fCorta(prox.fecha)) + " · " + hm(prox.desde) + "–" + hm(prox.hasta) + "</span><span>" + esc(nomCons(prox.consultorioId)) + (prox.estado === "pendiente" ? " · esperando aprobación" : "") + "</span></div>" : '<div class="pv-hero"><span class="pv-k">Tu próximo horario</span><span class="pv-big">No tenés horarios próximos</span></div>') +
     '<div class="kpis"><div class="kpi"><span class="kpi-l">' + (c.saldo > 0 ? "Tenés para pagar" : "Tu cuenta") + '</span><span class="kpi-v" style="color:' + (c.vencido > 0 ? "var(--bad)" : c.saldo > 0 ? "inherit" : "var(--good)") + '">' + (c.saldo > 0 ? money(c.saldo) : "Al día") + '</span><span class="kpi-s">' + (c.vencido > 0 ? money(c.vencido) + " vencido" : c.saldo < 0 ? "Saldo a favor " + money(-c.saldo) : c.saldo > 0 ? "Dentro del plazo" : "No debés nada") + '</span><button type="button" class="btn ghost sm" style="align-self:flex-start;padding:0" data-a="pv-tab" data-v="cuenta">Ver mi cuenta</button></div>' +
     '<div class="kpi"><span class="kpi-l">Esta semana</span><span class="kpi-v">' + fmtH(fijas + sueltas) + '</span><span class="kpi-s">' + fmtH(fijas) + " fijas" + (sueltas ? " + " + fmtH(sueltas) + " reservadas" : "") + (plan ? (contratosVigentes(p.id, hoy()).length ? " · tu contrato: " : " · tu plan: ") + fmtH(plan) : "") + "</span></div></div>" +
-    (() => { const cs = contratosDe(p.id).filter((c) => c.fin >= hoy()); if (!cs.length) return '<div class="note info" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><span>Reservá tu consultorio por mes: elegís tus horas por semana y quedan tuyas todo el mes, con cuota mensual.</span><button type="button" class="btn sm primary" data-a="pv-tab" data-v="horario">Armar mi horario fijo</button></div>'; return '<div style="display:flex;flex-direction:column;gap:10px">' + cs.map((c) => cardContrato(c, false)).join("") + "</div>"; })() +
+    (() => { const cs = contratosDe(p.id).filter((c) => c.fin >= hoy()); if (!cs.length) return '<div class="note info" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><span>Reservá tu consultorio por mes: elegís tus horas por semana y quedan tuyas todo el mes, con cuota mensual.</span><button type="button" class="btn sm primary" data-a="pv-tab" data-v="horario">Armar mi horario fijo</button></div>'; return '<div style="display:flex;flex-direction:column;gap:10px">' + cs.map((c) => cardContrato(c, false)).join("") + '<div><button type="button" class="btn sm" data-a="pv-tab" data-v="horario">' + ICON.plus + "Sumar más horas fijas</button></div></div>"; })() +
     '<section class="panel"><div class="panel-h"><h2>Tu plan</h2></div><div class="panel-b" style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:600">' + esc(textoPlan(p)) + '</span><span class="small muted">Las reservas fuera de tu plan se cobran a ' + money(precioHora(p.id, null)) + " la hora. Si cancelás con menos de " + Number(D.config.horasCancelacion || 24) + " h, se cobra igual.</span></div></section>" + '</div><div class="pv-col">' +
     '<section class="panel"><div class="panel-h"><h2>Tus próximos 7 días</h2><button type="button" class="btn sm" data-a="pv-tab" data-v="reservar">' + ICON.plus + "Hora suelta</button></div>" + (dias.length ? dias.join("") : '<div class="empty small">No tenés horarios esta semana.</div>') + "</section>" + "</div></div>";
 }
@@ -947,6 +947,13 @@ function duracionesPosibles(faltanMin) {
   if (faltanMin >= MIN_BLOQUE && faltanMin <= 600 && out.indexOf(faltanMin) === -1) out.push(faltanMin);
   return out.sort((a, b) => a - b);
 }
+// Libre para el armador: en un cambio de plan ignora el contrato que se reemplaza
+const cfLibre = (S, fr) => franjaLibre(fr, S.inicio, finContrato(S.inicio, S.plazo), S.pid, S.cambiaId || null);
+// Arranca el armador para cambiar un contrato: mismos horarios, desde el 1° del mes que viene
+function cfCambio(c) {
+  UI.cf = { pid: c.profesionalId, cambiaId: c.id, franjas: (c.franjas || []).map((fr) => ({ ...fr })), plazo: Number(c.plazo) || 3, inicio: primeroMesSig(), dia: (c.franjas && c.franjas[0] ? c.franjas[0].dia : 0), dur: 120, modId: c.moduloId || "" };
+  return UI.cf;
+}
 function cfEstado(pid) {
   if (!UI.cf || UI.cf.pid !== pid) {
     let ini = hoy(); if (!abierto(ini)) ini = addDays(ini, 1);
@@ -968,7 +975,7 @@ function armadorHTML(pid, paraDueno) {
   const choca = (fr) => elegidas.some((x) => x.dia === fr.dia && solapa(fr.desde, fr.hasta, x.desde, x.hasta));
   const filas = consultoriosAct().map((k) => {
     const libres = [];
-    for (let m = a; m + S.dur <= cz; m += 30) { const fr = { consultorioId: k.id, dia: S.dia, desde: m, hasta: m + S.dur }; if (!choca(fr) && franjaLibre(fr, S.inicio, fin, pid).ok) libres.push(m); }
+    for (let m = a; m + S.dur <= cz; m += 30) { const fr = { consultorioId: k.id, dia: S.dia, desde: m, hasta: m + S.dur }; if (!choca(fr) && cfLibre(S, fr).ok) libres.push(m); }
     return '<div class="row" style="flex-direction:column;align-items:stretch;gap:8px"><span class="row-title">' + esc(k.nombre) + "</span>" +
       (libres.length ? '<div class="slots">' + libres.map((m) => '<button type="button" class="slot" data-a="cf-add" data-cons="' + k.id + '" data-v="' + m + '">' + hm(m) + "</button>").join("") + "</div>" : '<span class="small muted">No hay ' + fmtH(S.dur / 60) + " libres todos los " + DIAS_L[S.dia] + " de ese período.</span>") + "</div>";
   }).join("");
@@ -977,10 +984,10 @@ function armadorHTML(pid, paraDueno) {
   const pct = mod ? Math.round((horas * 60 / metaMin) * 100) : 0;
   return '<p class="muted" style="margin:0">La reserva es por mes, como mínimo uno: elegís cuántas horas por semana necesitás y esos horarios quedan tuyos todas las semanas del mes.</p>' +
     '<div class="pv-step"><b>1</b>¿Cuántas horas por semana?</div>' +
-    (mods.length ? '<div class="slots" role="group" aria-label="Módulo">' + mods.map((m) => '<button type="button" class="chip-btn" style="min-height:52px;display:flex;flex-direction:column;align-items:flex-start;gap:0;padding:6px 14px" data-a="cf-mod" data-v="' + esc(m.id) + '" aria-pressed="' + (S.modId === m.id) + '"><b>' + esc(fmtH(Number(m.horas))) + ' por semana</b><span class="small">todo el mes · ' + money(m.precio) + " por mes</span></button>").join("") + "</div>" : '<p class="small muted" style="margin:0">El dueño todavía no cargó módulos: la cuota se calcula por las horas que elijas.</p>') +
+    (mods.length ? '<div class="slots" role="group" aria-label="Módulo">' + mods.map((m) => '<button type="button" class="chip-btn" style="min-height:52px;display:flex;flex-direction:column;align-items:flex-start;gap:0;padding:6px 14px" data-a="cf-mod" data-v="' + esc(m.id) + '" aria-pressed="' + (S.modId === m.id) + '"><b>' + esc(fmtH(Number(m.horas))) + ' por semana</b><span class="small">todo el mes · ' + money(m.precio) + " por mes</span></button>").join("") + '<button type="button" class="chip-btn" style="min-height:52px;display:flex;flex-direction:column;align-items:flex-start;gap:0;padding:6px 14px" data-a="cf-mod" data-v="" aria-pressed="' + (!S.modId) + '"><b>Otra cantidad</b><span class="small">desde 2 h · ' + money(tarifaHora() * SEMANAS_MES) + " por hora semanal</span></button></div>" : '<p class="small muted" style="margin:0">El dueño todavía no cargó módulos: la cuota se calcula por las horas que elijas.</p>') +
     '<div class="pv-step"><b>2</b>Plazo y desde cuándo</div>' +
     '<div class="tools"><div class="seg" role="group" aria-label="Plazo">' + PLAZOS.map(([n, l]) => '<button type="button" data-a="cf-plazo" data-v="' + n + '" aria-pressed="' + (S.plazo === n) + '">' + l + "</button>").join("") + "</div>" +
-    '<div class="field" style="width:170px"><label for="cf-ini">Empieza</label><input class="inp" type="date" id="cf-ini" data-change="cf-ini" min="' + hoy() + '" value="' + S.inicio + '"></div><span class="small muted" style="align-self:center">Hasta el ' + fCorta(fin) + "/" + fin.slice(2, 4) + "</span></div>" +
+    (S.cambiaId ? '<div class="field" style="width:170px"><span class="lbl">Empieza</span><b>' + fCorta(S.inicio) + "/" + S.inicio.slice(2, 4) + "</b></div>" : '<div class="field" style="width:170px"><label for="cf-ini">Empieza</label><input class="inp" type="date" id="cf-ini" data-change="cf-ini" min="' + hoy() + '" value="' + S.inicio + '"></div>') + '<span class="small muted" style="align-self:center">Hasta el ' + fCorta(fin) + "/" + fin.slice(2, 4) + "</span></div>" +
     '<div class="pv-step"><b>3</b>' + (mod ? "Repartí tus " + fmtH(Number(mod.horas)) + " en la semana" : "Sumá tus horarios de cada semana") + "</div>" +
     (mod ? '<div class="kpi" style="gap:6px"><span class="kpi-l">' + (completo ? "Completaste tus " + fmtH(Number(mod.horas)) : "Llevás " + fmtH(horas) + " de " + fmtH(Number(mod.horas)) + " · te faltan " + fmtH(faltanMin / 60)) + '</span><div class="bar"><i style="width:' + Math.min(100, pct) + "%;" + (completo ? "background:var(--good)" : "") + '"></i></div><span class="kpi-s">Podés repartirlas en distintos días y consultorios. Mínimo 2 h por bloque.</span></div>' : "") +
     (completo && mod ? "" :
@@ -991,8 +998,9 @@ function armadorHTML(pid, paraDueno) {
     (elegidas.length ? '<div style="display:flex;flex-direction:column;gap:6px">' + elegidas.slice().sort((x, y) => x.dia - y.dia || x.desde - y.desde).map((fr) => '<div class="franja">' + DIAS_L[fr.dia].replace(/^./, (z) => z.toUpperCase()) + " " + hm(fr.desde) + "–" + hm(fr.hasta) + ' <span class="small muted" style="font-weight:500">' + esc(nomCons(fr.consultorioId)) + '</span><button type="button" class="btn ghost sm spacer" data-a="cf-quitar" data-v="' + elegidas.indexOf(fr) + '">Quitar</button></div>').join("") + "</div>" +
       '<div class="sumario"><div><span class="small muted">Horas por semana</span><b>' + fmtH(horas) + (mod ? " de " + fmtH(Number(mod.horas)) : "") + '</b><span class="small muted">' + fmtH(horas * SEMANAS_MES) + ' al mes</span></div><div><span class="small muted">Cuota mensual</span><b>' + (precio ? money(precio) : "A definir") + "</b>" + (precio ? "" : '<span class="small muted">Falta cargar tarifas</span>') + '</div><div><span class="small muted">Plazo</span><b>' + nomPlazo(S.plazo) + '</b><span class="small muted">' + fCorta(S.inicio) + " al " + fCorta(fin) + "</span></div></div>" +
       '<p class="small muted" style="margin:0">' + (ajuste ? "La cuota se ajusta " + ajuste + "% cada 3 meses (primer ajuste el " + fCorta(addMeses(S.inicio, 3)) + "). " : "") + "El primer mes se cobra proporcional a los días. Si un día no venís, liberalo con " + diasAvisoFijo() + " días de aviso; el horario queda reservado para vos todo el plazo.</p>" +
+      (S.cambiaId && D.contratos[S.cambiaId] ? '<div class="note info">Tu contrato actual (' + fmtH(horasFranjas(D.contratos[S.cambiaId].franjas)) + " por semana, " + money(precioContrato(D.contratos[S.cambiaId], hoy())) + " por mes) termina el " + fCorta(addDays(S.inicio, -1)) + " y desde el " + fCorta(S.inicio) + " empieza este. Los horarios que ya tenías siguen elegidos: sumá, quitá o cambiá lo que quieras.</div>" : "") +
       (pend ? '<div class="note warn">Tenés ' + money(c.vencido) + " vencido: el pedido queda esperando la aprobación del dueño.</div>" : "") +
-      '<div><button type="button" class="btn primary" data-a="cf-confirmar"' + (completo ? "" : " disabled") + ">" + (!completo ? "Te faltan " + fmtH(faltanMin / 60) + " para completar" : pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button></div>"
+      '<div><button type="button" class="btn primary" data-a="cf-confirmar"' + (completo ? "" : " disabled") + ">" + (!completo ? "Te faltan " + fmtH(faltanMin / 60) + " para completar" : S.cambiaId ? "Confirmar el cambio de plan" : pend ? "Pedir horario fijo" : paraDueno ? "Crear contrato" : "Confirmar mi horario fijo") + "</button>" + (S.cambiaId ? '<button type="button" class="btn" data-a="cf-sin-cambio" style="margin-left:8px">No cambiar</button>' : "") + "</div>"
       : '<div class="empty small">Todavía no sumaste horarios. Elegí día, duración y tocá una hora.</div>') +
     "</div></section>";
 }
@@ -1005,6 +1013,7 @@ function cardContrato(c, paraDueno) {
     '<div class="tools" style="margin-top:4px">' +
     (c.estado === "pendiente" && paraDueno ? '<button type="button" class="btn sm primary" data-a="ct-aprobar" data-id="' + c.id + '">Aprobar</button><button type="button" class="btn sm danger" data-a="ct-rechazar" data-id="' + c.id + '">Rechazar</button>' : "") +
     (c.estado === "activo" && c.fin >= h && dias <= 45 ? '<button type="button" class="btn sm primary" data-a="ct-renovar" data-id="' + c.id + '">Renovar ' + nomPlazo(c.plazo).toLowerCase() + "</button>" : "") +
+    (c.estado === "activo" && c.fin >= h && c.fin >= primeroMesSig() ? '<button type="button" class="btn sm" data-a="ct-cambiar" data-id="' + c.id + '">Cambiar plan</button>' : "") +
     (paraDueno && c.estado === "activo" && c.fin >= h ? '<button type="button" class="btn sm" data-a="ct-editar" data-id="' + c.id + '">Precio y ajuste</button><button type="button" class="btn sm" data-a="ct-terminar" data-id="' + c.id + '">Terminar antes</button>' : "") +
     "</div></div>";
 }
@@ -1025,6 +1034,7 @@ function secContratos() {
     (hist.length ? '<details class="panel"><summary class="panel-h" style="cursor:pointer"><h2>Terminados (' + hist.length + ")</h2></summary><div class=\"panel-b\" style=\"display:flex;flex-direction:column;gap:10px\">" + hist.map((c) => cardContrato(c, true)).join("") + "</div></details>" : "");
 }
 function modalContratoNuevo(m) {
+  if (m.cambio && UI.cf && UI.cf.cambiaId) return mHead("Cambiar plan · " + esc(nomProf(UI.cf.pid))) + '<div class="modal-b">' + armadorHTML(UI.cf.pid, true) + "</div>";
   const pa = profesionalesAct(); if (!m.pid && pa[0]) m.pid = pa[0].id;
   return mHead("Nuevo contrato") + '<div class="modal-b">' + '<div class="field"><label for="ct-prof">Profesional</label><select class="sel" id="ct-prof" data-change="ct-prof">' + pa.map((p) => '<option value="' + p.id + '"' + (p.id === m.pid ? " selected" : "") + ">" + esc(p.nombre) + "</option>").join("") + "</select></div>" + (m.pid ? armadorHTML(m.pid, true) : "") + "</div>";
 }
@@ -1041,9 +1051,10 @@ function modalContratoTerminar(m) {
 }
 function pvHorario(p) {
   const cs = contratosDe(p.id).filter((c) => c.fin >= hoy());
+  if (UI.cf && UI.cf.cambiaId && UI.cf.pid === p.id && D.contratos[UI.cf.cambiaId]) return "<h1>Cambiar mi plan</h1>" + armadorHTML(p.id, false);
   return "<h1>Mi horario fijo</h1>" +
     (cs.length ? '<div style="display:flex;flex-direction:column;gap:10px">' + cs.map((c) => cardContrato(c, false)).join("") + "</div>" : '<p class="muted" style="margin:0">Tu consultorio reservado por mes, con los mismos días y horarios cada semana. Tus pacientes siempre te encuentran en el mismo lugar y pagás una cuota fija mensual.</p>') +
-    "<h2 style=\"margin:8px 0 0\">" + (cs.length ? "Sumar otro horario fijo" : "Armá tu horario fijo") + "</h2>" + armadorHTML(p.id, false);
+    "<h2 style=\"margin:8px 0 0\">" + (cs.length ? "Sumar más horas fijas" : "Armá tu horario fijo") + "</h2>" + armadorHTML(p.id, false);
 }
 
 /* ---- Bienvenida ---- */
@@ -1709,7 +1720,7 @@ document.addEventListener("click", async (e) => {
     case "pv-salir": UI.modo = "dueno"; cerrarModal(); render(); window.scrollTo(0, 0); break;
     case "pv-tab": UI.pvTab = v; cerrarModal(); render(); window.scrollTo(0, 0); break;
     case "ir-contratos": UI.tab = "mas"; UI.seccionMas = "contratos"; render(); window.scrollTo(0, 0); break;
-    case "cf-plazo": cfEstado(UI.cf.pid).plazo = Number(v); UI.cf.franjas = UI.cf.franjas.filter((fr) => franjaLibre(fr, UI.cf.inicio, finContrato(UI.cf.inicio, UI.cf.plazo), UI.cf.pid).ok); UI.modal ? renderModal() : render(); break;
+    case "cf-plazo": cfEstado(UI.cf.pid).plazo = Number(v); UI.cf.franjas = UI.cf.franjas.filter((fr) => cfLibre(UI.cf, fr).ok); UI.modal ? renderModal() : render(); break;
     case "cf-mod": UI.cf.modId = v; { const mo = modulosOrden().find((m) => m.id === v); if (mo) { let tot = 0; UI.cf.franjas = UI.cf.franjas.filter((fr) => { tot += fr.hasta - fr.desde; return tot <= mo.horas * 60; }); } } UI.modal ? renderModal() : render(); break;
     case "cf-dia": UI.cf.dia = Number(v); UI.modal ? renderModal() : render(); break;
     case "cf-dur": UI.cf.dur = Number(v); UI.modal ? renderModal() : render(); break;
@@ -1720,9 +1731,19 @@ document.addEventListener("click", async (e) => {
       if (!S.franjas.length) break;
       const modC = modulosOrden().find((m) => m.id === S.modId) || null;
       if (modC && Math.round(horasFranjas(S.franjas) * 60) !== Math.round(modC.horas * 60)) { toast("Completá las " + fmtH(Number(modC.horas)) + " del módulo"); break; }
-      const malo = S.franjas.find((fr) => !franjaLibre(fr, S.inicio, fin, S.pid).ok);
+      const malo = S.franjas.find((fr) => !cfLibre(S, fr).ok);
       if (malo) { toast("Uno de los horarios se acaba de ocupar. Revisalo."); S.franjas = S.franjas.filter((fr) => fr !== malo); paraDueno ? renderModal() : render(); break; }
       const pend = !paraDueno && cuenta(S.pid).vencido > 0;
+      if (S.cambiaId) {
+        const viejo = D.contratos[S.cambiaId];
+        if (!viejo || viejo.estado !== "activo") { toast("Ese contrato ya no está vigente."); UI.cf = null; paraDueno ? cerrarModal() : render(); break; }
+        if (pend) { toast("Tenés deuda vencida: pedile al dueño el cambio de plan."); break; }
+        await terminarContrato(viejo, addDays(S.inicio, -1));
+        await crearContrato({ profesionalId: S.pid, franjas: S.franjas, plazo: S.plazo, inicio: S.inicio, estado: "activo", origen: paraDueno ? "dueno" : "portal", precio: modC ? Number(modC.precio) : undefined, moduloId: modC ? modC.id : null, reemplaza: viejo.id });
+        UI.cf = null;
+        if (paraDueno) { cerrarModal(); UI.tab = "mas"; UI.seccionMas = "contratos"; } else UI.pvTab = "inicio";
+        render(); window.scrollTo(0, 0); toast("Listo: plan nuevo desde el " + fCorta(S.inicio)); break;
+      }
       await crearContrato({ profesionalId: S.pid, franjas: S.franjas, plazo: S.plazo, inicio: S.inicio, estado: pend ? "pendiente" : "activo", origen: paraDueno ? "dueno" : "portal", precio: modC ? Number(modC.precio) : undefined, moduloId: modC ? modC.id : null });
       UI.cf = null;
       if (paraDueno) { cerrarModal(); UI.tab = "mas"; UI.seccionMas = "contratos"; } else UI.pvTab = "inicio";
@@ -1734,6 +1755,14 @@ document.addEventListener("click", async (e) => {
     case "gf-pagar": abrirModal({ t: "pagoFijo", id, ym: v }); break;
     case "gf-baja": { const gf = D.gastosfijos[id]; if (gf) await put("gastosfijos", id, { ...gf, activo: false }); cerrarModal(); toast("Ya no se va a pedir más"); break; }
     case "ct-nuevo": UI.cf = null; abrirModal({ t: "ctNuevo", wide: true }); break;
+    case "ct-cambiar": {
+      const c = D.contratos[id]; if (!c) break;
+      cfCambio(c);
+      if (UI.modo === "prof") { cerrarModal(); UI.pvTab = "horario"; render(); window.scrollTo(0, 0); }
+      else abrirModal({ t: "ctNuevo", wide: true, pid: c.profesionalId, cambio: true });
+      break;
+    }
+    case "cf-sin-cambio": UI.cf = null; UI.modal ? cerrarModal() : (UI.pvTab = "inicio"); render(); window.scrollTo(0, 0); break;
     case "ct-editar": abrirModal({ t: "ctEditar", id }); break;
     case "ct-terminar": abrirModal({ t: "ctTerminar", id }); break;
     case "ct-aprobar": { const c = D.contratos[id]; if (!c) break; await put("contratos", id, { ...c, estado: "activo", aprobado: hoy() }); await setSeriesContrato(c, { estado: null }); toast("Contrato aprobado"); break; }
@@ -1894,7 +1923,7 @@ document.addEventListener("change", (e) => {
   if (k === "pago-prof") { UI.modal.id = el.value; renderModal(); return; }
   if (k === "pv-prof") { UI.profVista = el.value; UI.pvDesde = null; render(); return; }
   if (k === "pv-desde") { UI.pvDesde = Number(el.value); render(); return; }
-  if (k === "cf-ini") { if (el.value && el.value >= hoy()) { UI.cf.inicio = el.value; UI.cf.franjas = UI.cf.franjas.filter((fr) => franjaLibre(fr, UI.cf.inicio, finContrato(UI.cf.inicio, UI.cf.plazo), UI.cf.pid).ok); } UI.modal ? renderModal() : render(); return; }
+  if (k === "cf-ini") { if (el.value && el.value >= hoy()) { UI.cf.inicio = el.value; UI.cf.franjas = UI.cf.franjas.filter((fr) => cfLibre(UI.cf, fr).ok); } UI.modal ? renderModal() : render(); return; }
   if (k === "ct-prof") { UI.modal.pid = el.value; UI.cf = null; renderModal(); return; }
   if (k === "pv-rep") { if (UI.modal) { UI.modal.rep = Number(el.value); renderModal(); } return; }
   if (k === "prof-calc") {
